@@ -682,6 +682,9 @@ def handle_message(msg, ctx):
             extra.update(parse_nombre_doc(m["rutaDoc"]))
             out = sign_pdf(ruta, tipo, None, pin, extra=extra, cfg=cfg)
             log(f"Firmado: {out}")
+            # el original abría el PDF en el FirmaONPE para que el usuario lo viera;
+            # aquí firmamos headless, así que abrimos el firmado con el visor por defecto.
+            open_path(out)
             return reply(message="OK")
         except Exception as e:
             log(f"Error EJECUTAR_FIRMA: {e}")
