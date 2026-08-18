@@ -248,7 +248,13 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     cfg = cfg or {}
 
     signer = make_signer(cfg, pin)
-    cn = signer.signing_cert.subject.native.get("common_name", "Firmante")
+    subj = signer.signing_cert.subject.native
+    cn = subj.get("common_name", "Firmante")
+    # nombre limpio para el stamp: apellido + nombre (sin el "FAU ... hard" del CN)
+    nombre = f"{subj.get('surname') or ''} {subj.get('given_name') or ''}".strip() or cn
+    org = subj.get("organization_name") or ""
+    if "METEOROLOGIA" in org.upper():
+        org = "SENAMHI"
 
     # tamaño de página (puntos) para posiciones relativas
     r = PdfFileReader(open(pdf_path, "rb"))
@@ -313,7 +319,9 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         return lines
 
     fecha_hora = time.strftime("%d.%m.%Y %H:%M:%S -05:00")
-    bloque_cn = "\n".join(wrap_cn(f"Firmado digitalmente por {cn}"))
+    bloque_cn = "\n".join(wrap_cn(f"Firmado digitalmente por {nombre}"))
+    if org:
+        bloque_cn += f"\n{org}"
     stamp_text = bloque_cn + f"\nMotivo: {motivo}\nFecha: {fecha_hora}"
     # tipo 1 (FIRMA_NUM): el widget original lleva número+lugar/fecha arriba, aparte del
     # bloque firmante — ponytail: una sola caja de texto (no dos columnas independientes
@@ -674,7 +682,15 @@ def handle_message(msg, ctx):
             ruta = os.path.join(ruta_pri, m["rutaDoc"].replace("%7C", os.sep).replace("|", os.sep))
             http_get(url_base + m["urlDoc"], ruta)
             tipo = m.get("tipoFirma", "2")
-            pin = get_pin(cfg, ctx)
+            # flujo original: al firmar se pide la clave (no se usa la guardada sin preguntar)
+            pin = pedir_pin_gui_usuario()
+            if not pin:
+                return reply("1", "Firma cancelada (no se ingresó el PIN)")
+            # validar el PIN contra el token real antes de firmar
+            try:
+                make_signer(cfg, pin)
+            except Exception as e:
+                return reply("1", f"PIN incorrecto: {e}")
             if cfg.get("tsl_check", True) and not check_tsl(cfg, pin):
                 return reply("1", "Certificado no está en la TSL de INDECOPI")
             extra = {"Area": m.get("deMesaPartes", ""), "Telefono": m.get("fonoInstitucion", ""),
@@ -793,6 +809,49 @@ def confirmar_en_gui_usuario(mensaje, titulo, usuario="hruiz", timeout=120):
     except Exception as e:
         log(f"AVISO: no se pudo mostrar el diálogo de confirmación ({e}); se asume 'no confirmado'")
         return False
+
+
+def pedir_pin_gui_usuario(usuario="hruiz", timeout=120):
+    """Pide el PIN del token con un diálogo Tkinter en la sesión gráfica del usuario.
+    Replica el flujo del FirmaONPE original: al firmar se pide la clave (no se usa
+    la guardada en disco sin preguntar). Devuelve el PIN o None si cancela/timeout."""
+    env_gui = _entorno_grafico_usuario(usuario)
+    if not env_gui:
+        log(f"AVISO: no se encontró sesión gráfica de {usuario}; no se puede pedir PIN")
+        return None
+    marca = f"SGD_SIGNER_PIN_{os.getpid()}_{int(time.time())}"
+    script = (
+        f"{marca}=True; "
+        "import tkinter as tk; from tkinter import simpledialog; "
+        "root = tk.Tk(); root.withdraw(); "
+        "r = simpledialog.askstring('PIN del certificado', 'Ingresa el PIN del token:', show='*'); "
+        "print(r if r else '')"
+    )
+    env = dict(os.environ)
+    env.update(env_gui)
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3", "-c", script],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env, start_new_session=True,
+        )
+        stdout, _ = proc.communicate(timeout=timeout)
+        pin = stdout.strip()
+        return pin or None
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, 9)
+        except Exception:
+            pass
+        proc.kill()
+        proc.communicate()
+        subprocess.run(["pkill", "-9", "-u", usuario, "-f", marca], check=False)
+        log(f"AVISO: diálogo de PIN sin respuesta tras {timeout}s")
+        return None
+    except Exception as e:
+        log(f"AVISO: no se pudo pedir el PIN ({e})")
+        return None
 
 
 def run_ws(url_ws, ctx):
