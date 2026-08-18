@@ -46,6 +46,7 @@ CONFIG_DIR = Path.home() / ".sgd-signer"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 CERT_DIR = CONFIG_DIR / "certs"
 LOCK_SOCK = Path(tempfile.gettempdir()) / "sgd-signer.sock"
+IS_WIN = sys.platform == "win32"
 TSL_URL = "https://iofe.indecopi.gob.pe/TSL/tsl-pe.xml"
 # texto real del original (config_firmaonpe.xml, MENSAJE_FIRMA_MASIVA)
 MENSAJE_FIRMA_MASIVA = (
@@ -238,6 +239,23 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 IMG_POR_TIPO = {t: ASSETS_DIR / f"imagenFirma{t}.jpg" for t in TIPOS}
 
 
+def firma_box(tipo, W, H, pos=None, ms=0):
+    """Caja de la firma en coordenadas PDF (x0, y0, x1, y1, desde abajo).
+    Única fuente de verdad: la usa sign_pdf para firmar y la GUI para la vista
+    previa, así la preview ocupa exactamente el espacio real de la firma."""
+    if pos:
+        x, y = pos
+        return (x, H - y - 35, x + 155, H - y)
+    if tipo == "1":   # FIRMA_NUM: ancho casi completo, arriba
+        return (85, H - 140 - ms, W - 27, H - 12 - ms)
+    if tipo == "3":   # VB_FIRMA: abajo izquierda
+        return (5, 50, 90, 125)
+    if tipo == "6":   # FIRMA_REC: abajo izquierda
+        return (20, H - 95 - ms, 105, H - 12 - ms)
+    # 2 (básica) y 4/5 (avanzadas sin pos): abajo derecha
+    return (W - 180, H - 59 - ms, W - 25, H - 24 - ms)
+
+
 def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg=None):
     from pyhanko.sign import signers, fields
     from pyhanko.stamp import TextStampStyle
@@ -295,19 +313,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         pos = tuple(apariencia_tipo["pos"])
 
     ms = 0  # margen superior (inNumerar) — el portal no lo envía
-    if pos:
-        x, y = pos
-        box = (x, H - y - 35, x + 155, H - y)
-    elif tipo == "1":   # FIRMA_NUM: ancho casi completo, arriba
-        box = (85, H - 140 - ms, W - 27, H - 12 - ms)
-    elif tipo == "2":   # FIRMA_BASICO: abajo derecha
-        box = (W - 180, H - 59 - ms, W - 25, H - 24 - ms)
-    elif tipo == "3":   # VB_FIRMA: abajo izquierda
-        box = (5, 50, 90, 125)
-    elif tipo == "6":   # FIRMA_REC: abajo izquierda
-        box = (20, H - 95 - ms, 105, H - 12 - ms)
-    else:               # 4/5 avanzadas sin pos → abajo derecha
-        box = (W - 180, H - 59 - ms, W - 25, H - 24 - ms)
+    box = firma_box(tipo, W, H, pos=pos, ms=ms)
 
     # texto visible: replica el layout real del PDF de ejemplo ONPE (sección 10 del CONTRATO.md)
     # bloque derecho 5pt: nombre partido en líneas de ~25 chars (como el CN del ejemplo)
@@ -471,7 +477,10 @@ def check_ocsp_crl(signer):
 def _chown_a_usuario(path):
     """El daemon corre como root y escribe archivos/dirs como root; hruiz no puede
     guardarlos (LibreOffice: 'error general de entrada y salida'). Chown al dueño
-    del primer ancestro NO-root (TDOCUMENTOS, propiedad de hruiz)."""
+    del primer ancestro NO-root (TDOCUMENTOS, propiedad de hruiz). Windows: no-op
+    (no hay root/uid)."""
+    if IS_WIN:
+        return
     try:
         # subir desde path hasta el primer ancestro existente cuyo dueño no sea root
         d = path if os.path.isdir(path) else os.path.dirname(path)
@@ -518,12 +527,17 @@ def http_post_file(url, path):
 
 
 def open_path(p):
-    """Abre un archivo con la app predeterminada del usuario gráfico (hruiz).
+    """Abre un archivo con la app predeterminada del usuario.
 
-    El daemon corre como root sin DISPLAY, así que xdg-open directo no abre nada
-    en la sesión real. Se delega a la sesión gráfica de hruiz (mismo patrón que
-    confirmar_en_gui_usuario): runuser + entorno DISPLAY/DBUS detectado en vivo.
-    """
+    Windows: os.startfile. macOS: open. Linux: el daemon corre como root sin
+    DISPLAY, así que xdg-open directo no abre nada en la sesión real — se delega
+    a la sesión gráfica de hruiz (runuser + entorno DISPLAY/DBUS detectado en vivo)."""
+    if sys.platform == "win32":
+        os.startfile(p)
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", p])
+        return
     env_gui = _entorno_grafico_usuario("hruiz")
     if env_gui:
         env = dict(os.environ)
@@ -537,10 +551,7 @@ def open_path(p):
             return
         except Exception:
             pass  # fallback abajo
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", p])
-    else:
-        subprocess.Popen(["xdg-open", p])
+    subprocess.Popen(["xdg-open", p])
 
 
 def machine_info(ruta_principal):
@@ -728,7 +739,10 @@ def handle_message(msg, ctx):
 def _entorno_grafico_usuario(usuario="hruiz"):
     """Detecta DISPLAY/DBUS_SESSION_BUS_ADDRESS reales de la sesión gráfica activa
     de `usuario`, leyendo el environ de un proceso de su sesión (gnome-shell/Xorg).
-    No hardcodea :1 / uid 1000 — la sesión puede reiniciar con otro número."""
+    No hardcodea :1 / uid 1000 — la sesión puede reiniciar con otro número.
+    En Windows no aplica (el daemon corre como el mismo usuario): devuelve {}."""
+    if IS_WIN:
+        return {}
     try:
         pid = subprocess.check_output(
             ["pgrep", "-u", usuario, "-n", "gnome-shell"], text=True
@@ -761,16 +775,49 @@ def _entorno_grafico_usuario(usuario="hruiz"):
     return out or None
 
 
+def _ejecutar_dialogo(script, marca, usuario, timeout):
+    """Ejecuta un script Tkinter de diálogo y devuelve su stdout (str) o None si
+    timeout/error. Linux: runuser + entorno gráfico detectado. Windows: directo
+    (el daemon corre como el mismo usuario)."""
+    env_gui = _entorno_grafico_usuario(usuario)
+    if env_gui is None:
+        log(f"AVISO: no se encontró sesión gráfica de {usuario}")
+        return None
+    env = dict(os.environ)
+    env.update(env_gui)
+    if IS_WIN:
+        cmd = [sys.executable, "-c", script]
+    else:
+        cmd = ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3", "-c", script]
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env, start_new_session=True,
+        )
+        stdout, _ = proc.communicate(timeout=timeout)
+        return stdout.strip()
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, 9)
+        except Exception:
+            pass
+        proc.kill()
+        proc.communicate()
+        if not IS_WIN:
+            subprocess.run(["pkill", "-9", "-u", usuario, "-f", marca], check=False)
+        log(f"AVISO: diálogo sin respuesta tras {timeout}s")
+        return None
+    except Exception as e:
+        log(f"AVISO: no se pudo mostrar el diálogo ({e})")
+        return None
+
+
 def confirmar_en_gui_usuario(mensaje, titulo, usuario="hruiz", timeout=120):
     """Muestra un diálogo Sí/No nativo (Tkinter) en la sesión gráfica del usuario y
     devuelve True/False. Usado para replicar el diálogo de confirmación de firma
-    masiva del FirmaONPE original, que corría en la GUI de escritorio — el daemon
-    vive headless como root, así que delega la pregunta a la sesión real de hruiz
-    (mismo patrón que MANUAL_SIGN, pero en dirección inversa: root pregunta, usuario responde)."""
-    env_gui = _entorno_grafico_usuario(usuario)
-    if not env_gui:
-        log(f"AVISO: no se encontró sesión gráfica de {usuario}; se asume 'no confirmado' (falla segura)")
-        return False
+    masiva del original, que corría en la GUI de escritorio — el daemon vive
+    headless como root, así que delega la pregunta a la sesión real de hruiz."""
     marca = f"SGD_SIGNER_CONFIRM_{os.getpid()}_{int(time.time())}"
     script = (
         f"{marca}=True; "  # marca única en el CMDLINE (visible a pkill -f), no en environ
@@ -779,43 +826,13 @@ def confirmar_en_gui_usuario(mensaje, titulo, usuario="hruiz", timeout=120):
         f"r = messagebox.askyesno({titulo!r}, {mensaje!r}); "
         "print('SI' if r else 'NO')"
     )
-    env = dict(os.environ)
-    env.update(env_gui)
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3", "-c", script],
-            stdin=subprocess.DEVNULL,  # sin esto runuser puede colgarse esperando EOF de stdin
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-            start_new_session=True,  # permite matar todo el grupo (runuser + nieto Tk) si nadie responde
-        )
-        stdout, _ = proc.communicate(timeout=timeout)
-        return stdout.strip() == "SI"
-    except subprocess.TimeoutExpired:
-        # runuser no siempre propaga la señal al nieto (proceso Tk real bajo hruiz);
-        # matar el grupo completo por PGID, y por si acaso también por marca en cmdline.
-        try:
-            os.killpg(proc.pid, 9)
-        except Exception:
-            pass
-        proc.kill()
-        proc.communicate()
-        subprocess.run(["pkill", "-9", "-u", usuario, "-f", marca], check=False)
-        log(f"AVISO: diálogo de confirmación sin respuesta tras {timeout}s; se asume 'no confirmado'")
-        return False
-    except Exception as e:
-        log(f"AVISO: no se pudo mostrar el diálogo de confirmación ({e}); se asume 'no confirmado'")
-        return False
+    out = _ejecutar_dialogo(script, marca, usuario, timeout)
+    return out == "SI"
 
 
 def pedir_pin_gui_usuario(usuario="hruiz", timeout=120):
     """Pide el PIN del token con un diálogo Tkinter en la sesión gráfica del usuario.
-    Replica el flujo del FirmaONPE original: al firmar se pide la clave (no se usa
-    la guardada en disco sin preguntar). Devuelve el PIN o None si cancela/timeout."""
-    env_gui = _entorno_grafico_usuario(usuario)
-    if not env_gui:
-        log(f"AVISO: no se encontró sesión gráfica de {usuario}; no se puede pedir PIN")
-        return None
+    Devuelve el PIN o None si cancela/timeout."""
     marca = f"SGD_SIGNER_PIN_{os.getpid()}_{int(time.time())}"
     script = (
         f"{marca}=True; "
@@ -824,48 +841,29 @@ def pedir_pin_gui_usuario(usuario="hruiz", timeout=120):
         "r = simpledialog.askstring('PIN del certificado', 'Ingresa el PIN del token:', show='*'); "
         "print(r if r else '')"
     )
-    env = dict(os.environ)
-    env.update(env_gui)
-    proc = None
-    try:
-        proc = subprocess.Popen(
-            ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3", "-c", script],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=env, start_new_session=True,
-        )
-        stdout, _ = proc.communicate(timeout=timeout)
-        pin = stdout.strip()
-        return pin or None
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, 9)
-        except Exception:
-            pass
-        proc.kill()
-        proc.communicate()
-        subprocess.run(["pkill", "-9", "-u", usuario, "-f", marca], check=False)
-        log(f"AVISO: diálogo de PIN sin respuesta tras {timeout}s")
-        return None
-    except Exception as e:
-        log(f"AVISO: no se pudo pedir el PIN ({e})")
-        return None
+    out = _ejecutar_dialogo(script, marca, usuario, timeout)
+    return out or None
 
 
 def lanzar_gui_usuario(pdf_path, tipo, usuario="hruiz"):
     """Abre la GUI de firma (sgd-signer gui) en la sesión gráfica del usuario, con el
-    PDF ya cargado y el tipo preseleccionado. El daemon es root sin DISPLAY, así que
-    delega el lanzamiento a la sesión real (mismo patrón que confirmar/pedir PIN)."""
+    PDF ya cargado y el tipo preseleccionado. Linux: el daemon es root sin DISPLAY,
+    delega a la sesión real vía runuser. Windows: directo (mismo usuario)."""
     env_gui = _entorno_grafico_usuario(usuario)
-    if not env_gui:
+    if env_gui is None:
         log(f"AVISO: no se encontró sesión gráfica de {usuario}; no se puede abrir la GUI")
         return False
     env = dict(os.environ)
     env.update(env_gui)
+    script = Path(__file__).resolve()
+    if IS_WIN:
+        cmd = [sys.executable, str(script), "gui", pdf_path, "--tipo", tipo]
+    else:
+        cmd = ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3",
+               str(script), "gui", pdf_path, "--tipo", tipo]
     try:
         subprocess.Popen(
-            ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3",
-             "/opt/sgd-signer/sgd-signer.py", "gui", pdf_path, "--tipo", tipo],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=env, start_new_session=True,
         )
         return True
@@ -948,14 +946,36 @@ def parse_tramitedoc_url(url):
     return None
 
 
+def _sock_addr():
+    """Dirección del socket del daemon: AF_UNIX en Linux/macOS, TCP localhost en
+    Windows (no hay AF_UNIX). Única fuente de verdad para cliente y servidor."""
+    if IS_WIN:
+        return (socket.AF_INET, ("127.0.0.1", 45678))
+    return (socket.AF_UNIX, str(LOCK_SOCK))
+
+
+def _sock_alive():
+    if IS_WIN:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("127.0.0.1", 45678))
+            s.close()
+            return True
+        except Exception:
+            return False
+    return LOCK_SOCK.exists()
+
+
 def forward_to_daemon(url):
     """Si ya hay un daemon corriendo, le pasa la URL y sale."""
-    if not LOCK_SOCK.exists():
+    if not _sock_alive():
         return False
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        fam, addr = _sock_addr()
+        s = socket.socket(fam, socket.SOCK_STREAM)
         s.settimeout(5)
-        s.connect(str(LOCK_SOCK))
+        s.connect(addr)
         s.sendall(url.encode())
         s.close()
         return True
@@ -966,14 +986,15 @@ def forward_to_daemon(url):
 def call_daemon_op(op_payload, timeout=60):
     """Cliente genérico del protocolo OP: — la GUI (usuario hruiz) no ve el token/PIN
     real, solo el daemon root; todo pasa por este socket."""
-    if not LOCK_SOCK.exists():
+    if not _sock_alive():
         raise RuntimeError(
             f"El daemon sgd-signer no está corriendo ({LOCK_SOCK} no existe). "
             "Verifica: systemctl status sgd-signer"
         )
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    fam, addr = _sock_addr()
+    s = socket.socket(fam, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    s.connect(str(LOCK_SOCK))
+    s.connect(addr)
     s.sendall(b"OP:" + json.dumps(op_payload).encode())
     s.shutdown(socket.SHUT_WR)  # EOF de escritura: el server usa recv()=="" para saber que ya mandamos todo
     chunks = []
@@ -1164,10 +1185,14 @@ def daemon_loop(url):
             log("VerifConf: configuración OK (cert: %s)" % (ctx["cfg"].get("cert") or "auto"))
             return
         ctx["urlBase"] = p["urlBase"]
-        # rutaPri del portal puede venir como ruta Windows (C:\Users\...\TDOCUMENTOS)
+        # rutaPri del portal viene como ruta Windows (C:\Users\...\TDOCUMENTOS).
+        # En Windows es válida y se usa directo. En Linux/macOS se mapea a
+        # ~/Documentos/TDOCUMENTOS (GNOME) o ~/TDOCUMENTOS.
         rp = p["rutaPri"] or ""
-        if not rp or "\\" in rp or ":" in rp.split("/")[0]:
-            # "Mis documentos/TDOCUMENTOS" → ~/Documentos/TDOCUMENTOS (GNOME) o ~/TDOCUMENTOS
+        if IS_WIN:
+            if not rp:
+                rp = str(Path.home() / "Documents" / "TDOCUMENTOS")
+        elif not rp or "\\" in rp or ":" in rp.split("/")[0]:
             docs = Path.home() / "Documentos"
             rp = str(docs / "TDOCUMENTOS") if docs.exists() else str(Path.home() / "TDOCUMENTOS")
         ctx["rutaPri"] = rp
@@ -1187,13 +1212,16 @@ def daemon_loop(url):
 
     ctx["session_pin"] = None  # PIN "recordado en esta sesión" — solo en memoria, muere con el daemon
 
-    if LOCK_SOCK.exists():
+    if not IS_WIN and LOCK_SOCK.exists():
         LOCK_SOCK.unlink()
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(str(LOCK_SOCK))
-    os.chmod(str(LOCK_SOCK), 0o666)  # hruiz (handler) escribe, daemon root lee
+    fam, addr = _sock_addr()
+    srv = socket.socket(fam, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(addr)
+    if not IS_WIN:
+        os.chmod(str(LOCK_SOCK), 0o666)  # hruiz (handler) escribe, daemon root lee
     srv.listen(4)
-    log(f"Daemon escuchando en {LOCK_SOCK}")
+    log(f"Daemon escuchando en {addr}")
     while True:
         conn, _ = srv.accept()
         data = b""
@@ -1374,7 +1402,7 @@ def gui_main(pdf_path=None, tipo=None):
                                      bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
             self.lbl_pos.pack(side="left", padx=16)
 
-            self.canvas = tk.Canvas(root, bg="#DADAD8", highlightthickness=0)
+            self.canvas = tk.Canvas(root, bg="#DADAD8", highlightthickness=0, cursor="crosshair")
             self.canvas.pack(fill="both", expand=True, padx=12, pady=(0, 6))
             self.canvas.bind("<Button-1>", self.click_pagina)
 
@@ -1494,6 +1522,10 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="right")
+            # vista previa de la imagen de firma
+            self.cfg_img_preview = tk.Label(f_img, text="", bg=UI["surface"], fg=UI["muted"],
+                                            font=UI["mono"], height=4)
+            self.cfg_img_preview.pack(anchor="w", padx=12, pady=(0, 8))
             # posición de la imagen dentro del stamp
             tk.Label(f_img, text="Posición de la imagen dentro de la firma", bg=UI["surface"],
                      fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(4, 2))
@@ -1591,6 +1623,18 @@ def gui_main(pdf_path=None, tipo=None):
             self.cfg_pos_lbl.config(
                 text=f"Posición guardada: x={pos[0]:.0f} y={pos[1]:.0f} pt" if pos
                 else "Sin posición guardada (usa la del tipo por defecto)")
+            # vista previa de la imagen (custom o la por defecto del tipo)
+            img_path = Path(img) if img else IMG_POR_TIPO.get(self.cfg_tipo.get())
+            try:
+                if img_path and img_path.exists():
+                    pil = Image.open(img_path)
+                    pil.thumbnail((180, 90))
+                    self._cfg_img_tk = ImageTk.PhotoImage(pil)
+                    self.cfg_img_preview.config(image=self._cfg_img_tk, text="")
+                else:
+                    self.cfg_img_preview.config(image="", text="(sin imagen)")
+            except Exception:
+                self.cfg_img_preview.config(image="", text="(no se pudo previsualizar)")
 
         def _cfg_elegir_imagen(self):
             p = filedialog.askopenfilename(title="Imagen de firma",
@@ -1654,6 +1698,7 @@ def gui_main(pdf_path=None, tipo=None):
                 if n == _nombre_mostrado:
                     self.tipo.set(t)
                     self._cargar_pos_guardada()
+                    self._dibujar_preview_firma()
                     return
 
         def _cargar_pos_guardada(self):
@@ -1703,6 +1748,29 @@ def gui_main(pdf_path=None, tipo=None):
             self._cargar_pos_guardada()
             self.render_pagina()
 
+        def _dibujar_preview_firma(self):
+            """Dibuja un rectángulo semitransparente donde irá la firma, usando la
+            misma caja que sign_pdf (firma_box) para que la preview ocupe el espacio
+            real. Coordenadas PDF (desde abajo) → canvas (desde arriba)."""
+            self.canvas.delete("preview_firma")
+            if not self.pdf_path:
+                return
+            pos = self.pos_pt
+            box = firma_box(self.tipo.get(), self.page_w_pt, self.page_h_pt, pos=pos)
+            x0, y0, x1, y1 = box
+            cx0 = x0 * self.scale
+            cx1 = x1 * self.scale
+            cy_top = (self.page_h_pt - y1) * self.scale
+            cy_bot = (self.page_h_pt - y0) * self.scale
+            self.canvas.create_rectangle(
+                cx0, cy_top, cx1, cy_bot,
+                outline="#346538", width=2, dash=(4, 3), tags="preview_firma",
+            )
+            self.canvas.create_text(
+                (cx0 + cx1) / 2, (cy_top + cy_bot) / 2,
+                text="FIRMA", fill="#346538", font=UI["mono_b"], tags="preview_firma",
+            )
+
         def render_pagina(self):
             self.page_w_pt, self.page_h_pt = _pdf_page_size_pt(self.pdf_path, self.pagina)
             tmp = tempfile.mktemp(prefix="sgd-signer-preview-")
@@ -1726,6 +1794,7 @@ def gui_main(pdf_path=None, tipo=None):
             os.remove(png_path)
             self.lbl_pagina.config(text=f"{self.pagina} / {self.n_paginas}")
             self.pos_pt = None
+            self._dibujar_preview_firma()
 
         def cambiar_pagina(self, delta):
             if not self.pdf_path:
@@ -1742,6 +1811,7 @@ def gui_main(pdf_path=None, tipo=None):
             y_pt = event.y / self.scale  # y desde arriba, como el original (PosicionXY)
             self.pos_pt = (x_pt, y_pt)
             self.lbl_pos.config(text=f"Posición fijada: x={x_pt:.0f} y={y_pt:.0f} pt (desde arriba)")
+            self._dibujar_preview_firma()
             try:
                 set_apariencia_via_daemon(self.tipo.get(), pos=self.pos_pt)
             except Exception:
@@ -1773,6 +1843,13 @@ def gui_main(pdf_path=None, tipo=None):
     root.title("SGD-SIGNER — Firma digital")
     root.geometry("760x920")
     root.configure(bg=UI["bg"])
+    # icono de la ventana (assets/icon.png); si no existe, se omite sin romper
+    try:
+        icon = ImageTk.PhotoImage(Image.open(ASSETS_DIR / "icon.png"))
+        root.iconphoto(True, icon)
+        root._icon_ref = icon  # mantener referencia viva
+    except Exception:
+        pass
     App(root)
     root.mainloop()
 
