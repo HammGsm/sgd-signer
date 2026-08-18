@@ -415,13 +415,39 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 IMG_POR_TIPO = {t: ASSETS_DIR / f"imagenFirma{t}.jpg" for t in TIPOS}
 
 
+FIRMA_W, FIRMA_H = 190, 60  # recuadro de firma manual (pt) — 5 líneas a leading 6 + imagen
+
+
+def _imagen_firma_nitida(path):
+    """Imagen de firma lista para estampar: fondo blanco -> transparente, trazo realzado.
+
+    El JPEG original trae el trazo en gris claro sobre fondo blanco; escalado dentro
+    del recuadro se veía lavado ("degradado") y además tapaba el documento con un
+    bloque blanco. Se quita el fondo y se lleva el trazo a negro pleno.
+    """
+    from PIL import Image as PILImage
+    im = PILImage.open(path).convert("RGB")
+    gris = im.convert("L")
+    # alfa: 0 donde es fondo (claro), 255 donde hay trazo (oscuro)
+    alfa = gris.point(lambda v: 0 if v >= 235 else 255)
+    # trazo a negro pleno (contraste alto), el fondo ya no se ve
+    trazo = gris.point(lambda v: max(0, int(v * 0.45)))
+    out = PILImage.merge("RGBA", (trazo, trazo, trazo, alfa))
+    return out
+
+
 def firma_box(tipo, W, H, pos=None, ms=0):
     """Caja de la firma en coordenadas PDF (x0, y0, x1, y1, desde abajo).
     Única fuente de verdad: la usa sign_pdf para firmar y la GUI para la vista
     previa, así la preview ocupa exactamente el espacio real de la firma."""
     if pos:
         x, y = pos
-        return (x, H - y - 35, x + 155, H - y)
+        # el click marca la esquina superior izquierda; la caja crece hacia abajo.
+        # 35pt era demasiado bajo: comprimía las 5 líneas del texto y escalaba la
+        # imagen (168x84 px) al 10%, por eso la firma "no se notaba".
+        x = max(0, min(x, W - FIRMA_W))
+        y_top = max(FIRMA_H, min(H - y, H))
+        return (x, y_top - FIRMA_H, x + FIRMA_W, y_top)
     if tipo == "1":   # FIRMA_NUM: ancho casi completo, arriba
         return (85, H - 140 - ms, W - 27, H - 12 - ms)
     if tipo == "3":   # VB_FIRMA: abajo izquierda
@@ -521,7 +547,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     img_path = Path(apariencia_tipo["imagen"]) if apariencia_tipo.get("imagen") else IMG_POR_TIPO.get(tipo)
     background = None
     if img_path and img_path.exists():
-        background = PdfImage(PILImage.open(img_path))
+        background = PdfImage(_imagen_firma_nitida(img_path))
 
     # posición de la imagen DENTRO del stamp (configurable por tipo): el usuario
     # elige dónde va la imagen respecto al texto. Default = derecha/abajo (como el
@@ -541,8 +567,8 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
             margins=Margins(left=0, right=0, top=0, bottom=0),
         ),
         text_box_style=TextBoxStyle(
-            font_size=5,
-            leading=6,
+            font_size=7,
+            leading=8,
             border_width=0,
             box_layout_rule=SimpleBoxLayoutRule(
                 x_align=AxisAlignment.ALIGN_MAX, y_align=AxisAlignment.ALIGN_MIN,
@@ -1729,13 +1755,36 @@ def gui_main(pdf_path=None, tipo=None):
         def abrir_configuracion(self):
             win = tk.Toplevel(self.root)
             win.title("Configuración — sgd-signer")
-            win.geometry("580x820")
+            win.geometry("600x760")
+            win.minsize(520, 420)
             win.configure(bg=UI["bg"])
             win.transient(self.root)
             win.grab_set()
 
-            body = tk.Frame(win, bg=UI["bg"])
-            body.pack(fill="both", expand=True, padx=16, pady=16)
+            # contenido scrollable: las secciones no caben en una altura fija y en
+            # pantallas bajas los botones quedaban fuera de la ventana.
+            _cont = tk.Frame(win, bg=UI["bg"])
+            _cont.pack(fill="both", expand=True)
+            _cv = tk.Canvas(_cont, bg=UI["bg"], highlightthickness=0)
+            _sb = tk.Scrollbar(_cont, orient="vertical", command=_cv.yview)
+            _cv.configure(yscrollcommand=_sb.set)
+            _sb.pack(side="right", fill="y")
+            _cv.pack(side="left", fill="both", expand=True)
+            body = tk.Frame(_cv, bg=UI["bg"])
+            _win_id = _cv.create_window((0, 0), window=body, anchor="nw")
+            body.configure(padx=16, pady=16)
+
+            def _ajustar(_e=None):
+                _cv.configure(scrollregion=_cv.bbox("all"))
+                _cv.itemconfigure(_win_id, width=_cv.winfo_width())
+
+            body.bind("<Configure>", _ajustar)
+            _cv.bind("<Configure>", _ajustar)
+            _cv.bind_all("<Button-4>", lambda e: _cv.yview_scroll(-2, "units"), add="+")
+            _cv.bind_all("<Button-5>", lambda e: _cv.yview_scroll(2, "units"), add="+")
+            win.bind("<Destroy>", lambda e: (_cv.unbind_all("<Button-4>"),
+                                             _cv.unbind_all("<Button-5>"))
+                     if e.widget is win else None)
 
             def seccion(titulo):
                 f = tk.Frame(body, bg=UI["surface"], highlightbackground=UI["border"],
@@ -1755,21 +1804,29 @@ def gui_main(pdf_path=None, tipo=None):
             self.cfg_pin_var = tk.StringVar()
             tk.Entry(fila, textvariable=self.cfg_pin_var, show="*", relief="flat",
                      highlightbackground=UI["border"], highlightthickness=1,
-                     font=UI["mono"], width=20).pack(side="left")
+                     font=UI["mono"]).pack(fill="x", ipady=3)
+
+            # radios + botones en su propia fila: con todo en una sola línea el
+            # botón "Guardar PIN" quedaba fuera del área visible de la ventana.
+            fila2 = tk.Frame(f_pin, bg=UI["surface"])
+            fila2.pack(fill="x", padx=12, pady=(0, 10))
             self.cfg_recordar = tk.StringVar(value="sesion")
-            tk.Radiobutton(fila, text="Solo esta sesión", variable=self.cfg_recordar,
+            tk.Radiobutton(fila2, text="Solo esta sesión", variable=self.cfg_recordar,
                            value="sesion", bg=UI["surface"], fg=UI["ink"], font=UI["ui"],
-                           activebackground=UI["surface"]).pack(side="left", padx=(10, 4))
-            tk.Radiobutton(fila, text="Permanente (disco)", variable=self.cfg_recordar,
+                           activebackground=UI["surface"]).pack(side="left")
+            tk.Radiobutton(fila2, text="Permanente (disco)", variable=self.cfg_recordar,
                            value="disco", bg=UI["surface"], fg=UI["ink"], font=UI["ui"],
-                           activebackground=UI["surface"]).pack(side="left", padx=4)
-            tk.Button(fila, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
+                           activebackground=UI["surface"]).pack(side="left", padx=(8, 0))
+
+            fila3 = tk.Frame(f_pin, bg=UI["surface"])
+            fila3.pack(fill="x", padx=12, pady=(0, 10))
+            tk.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
                       bg=UI["ink"], fg="#FFFFFF", relief="flat", font=UI["ui"],
-                      padx=8, pady=2, borderwidth=0).pack(side="right")
-            tk.Button(f_pin, text="Olvidar PIN guardado", command=self._olvidar_pin,
+                      padx=10, pady=4, borderwidth=0).pack(side="left")
+            tk.Button(fila3, text="Olvidar PIN guardado", command=self._olvidar_pin,
                       bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(anchor="w", padx=12, pady=(0, 10))
+                      font=UI["ui"], padx=10, pady=4).pack(side="left", padx=(8, 0))
             self._refrescar_cfg_pin_status()
 
             # --- certificado de firma ------------------------------------------
@@ -1847,7 +1904,8 @@ def gui_main(pdf_path=None, tipo=None):
                      fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(4, 2))
             marco_firma = tk.Frame(f_img, bg=UI["border"])
             marco_firma.pack(anchor="w", padx=12, pady=(0, 10))
-            self.cfg_firma_canvas = tk.Canvas(marco_firma, width=310, height=80,
+            self.cfg_firma_canvas = tk.Canvas(marco_firma, width=FIRMA_W * 2,
+                                              height=FIRMA_H * 2,
                                               bg="#FFFFFF", highlightthickness=0)
             self.cfg_firma_canvas.pack(padx=1, pady=1)
 
@@ -1985,12 +2043,12 @@ def gui_main(pdf_path=None, tipo=None):
 
         def _cfg_render_firma(self):
             """Dibuja la firma como saldrá: imagen en su posición + texto.
-            Usa las mismas proporciones que el stamp real (155x35 pt)."""
+            Usa las mismas proporciones que el stamp real (FIRMA_W x FIRMA_H)."""
             cv = getattr(self, "cfg_firma_canvas", None)
             if cv is None:
                 return
             cv.delete("all")
-            W, H = 310, 80  # 2x la caja real de 155x35 pt
+            W, H = FIRMA_W * 2, FIRMA_H * 2  # 2x la caja real, misma proporción
             img = self.cfg_img_actual_path()
             img_w = img_h = 0
             if img and img.exists():
