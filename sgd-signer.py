@@ -472,15 +472,22 @@ def _chown_a_usuario(path):
         pass  # best-effort: si falla, el archivo queda como root (no rompe la descarga)
 
 
-def http_get(url, dest):
+def http_get(url, dest, detect_std=False):
     # el rutaDoc del portal trae subdirectorios (año, etc.) vía "|" → os.sep;
     # crear el directorio padre antes de escribir o open(dest,"wb") revienta con
     # [Errno 2] No such file or directory (root cause del error en GENERAR_DOCUMENTO).
     parent = os.path.dirname(dest) or "."
     os.makedirs(parent, exist_ok=True)
     req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
-    with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        ctype = r.headers.get("Content-Type", "")
+        # el original (bajarGeneraDocURL) distingue: si el servidor responde
+        # application/std es un mensaje de error/aviso, NO un documento. Grabarlo
+        # como .docx binario produce un archivo corrupto que LibreOffice no abre.
+        if detect_std and "application/std" in ctype:
+            return r.read().decode("utf-8", "replace").strip()
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(r, f)
     # el archivo y su subdir quedan como root; pasarlos a hruiz para que pueda
     # abrirlos/guardarlos con LibreOffice (root cause del 'error general E/S').
     _chown_a_usuario(dest)
@@ -612,7 +619,19 @@ def handle_message(msg, ctx):
         try:
             m = json.loads(msg.get("message", "{}"))
             ruta = os.path.join(ruta_pri, m["rutaDoc"].replace("%7C", os.sep).replace("|", os.sep))
-            http_get(url_base + m["urlDoc"], ruta)
+            # remplazaArchivo: si el archivo existe y está bloqueado por otro proceso,
+            # el original devuelve "Documento utilizado por otro proceso" (no lo pisa).
+            if m.get("remplazaArchivo") and os.path.exists(ruta):
+                try:
+                    with open(ruta, "rb"):
+                        pass
+                except OSError:
+                    return reply("1", "Documento utilizado por otro proceso")
+            resp = http_get(url_base + m["urlDoc"], ruta, detect_std=True)
+            # application/std = mensaje de error/aviso del servidor, no un documento:
+            # en ese caso http_get devuelve el mensaje (≠ ruta), no escribe el archivo.
+            if resp != ruta:
+                return reply("1", resp)
             open_path(ruta)
             return reply()
         except Exception as e:
