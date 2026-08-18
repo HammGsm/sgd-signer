@@ -169,11 +169,171 @@ _PKCS11_SESSION_CACHE = {"session": None, "lib_path": None, "pin": None}
 _PKCS11_LOCK = threading.Lock()
 
 
+PKCS11_LIBS_CONOCIDAS = [
+    "/usr/lib/bit4id/libbit4xpki.so",      # Bit4id (tokenME, Cosmo)
+    "/usr/lib64/opensc-pkcs11.so",         # OpenSC (DNIe, CNS, genéricas)
+    "/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so",
+    "/usr/local/lib/libeTPkcs11.so",       # SafeNet
+    "C:\\Windows\\System32\\bit4xpki.dll",
+    "C:\\Windows\\System32\\opensc-pkcs11.dll",
+]
+
+
+def _cert_info(der):
+    """Extrae (CN, emisor, no_after, serial) de un cert DER. Sin dependencias
+    extra: asn1crypto ya viene con pyhanko."""
+    from asn1crypto import x509 as asn1_x509
+    c = asn1_x509.Certificate.load(der)
+    subj = c.subject.native
+    return {
+        "cn": subj.get("common_name", "(sin CN)"),
+        "org": subj.get("organization_name", ""),
+        "emisor": c.issuer.native.get("common_name", ""),
+        "no_after": c.not_valid_after,
+        "serial": format(c.serial_number, "x"),
+    }
+
+
+def _certs_de_sesion(sess, base, pin_ok=True):
+    """Extrae los certificados de firma (con clave privada) de una sesión abierta.
+
+    Importante: se materializan primero los certificados y sólo después se
+    consultan las claves privadas. Llamar a get_key() mientras el iterador de
+    get_objects() sigue abierto rompe el estado del driver PKCS#11 (Bit4id:
+    OperationNotInitialized), porque son dos operaciones de búsqueda a la vez.
+    """
+    import pkcs11
+    crudos = []
+    for c in sess.get_objects({pkcs11.Attribute.CLASS: pkcs11.ObjectClass.CERTIFICATE}):
+        try:
+            cid = c[pkcs11.Attribute.ID]
+            der = c[pkcs11.Attribute.VALUE]
+            label = c[pkcs11.Attribute.LABEL]
+        except Exception:
+            continue
+        if cid:
+            crudos.append((cid, der, label))
+
+    out = []
+    for cid, der, label in crudos:
+        # sólo certificados de firma: los que tienen clave privada en el token
+        # (los CA intermedios embebidos no la tienen)
+        try:
+            sess.get_key(pkcs11.ObjectClass.PRIVATE_KEY, id=cid)
+        except Exception:
+            continue
+        try:
+            info = _cert_info(der)
+        except Exception:
+            continue
+        out.append({**base, **info, "key_id": cid, "label": label, "listo": pin_ok})
+    return out
+
+
+def listar_certificados(pin=None):
+    """Detecta TODOS los certificados de firma disponibles en todos los módulos
+    PKCS#11 y tokens conectados. Devuelve lista de dicts con la info necesaria
+    para elegir uno y para validarlo.
+
+    Una PC puede tener varios dispositivos (token USB + smartcard). Sin PIN sólo
+    se listan los tokens; con PIN se abre sesión y se leen los certificados.
+
+    Reusa la sesión cacheada del daemon cuando corresponde: los drivers PKCS#11
+    (Bit4id) fallan con OperationNotInitialized si se abre una segunda sesión
+    sobre la misma tarjeta mientras otra está viva.
+    """
+    import pkcs11
+    encontrados = []
+    vistos = set()  # (serial_token, key_id_hex) — la misma tarjeta puede verse
+                    # desde dos módulos (Bit4id + OpenSC); no duplicar
+    with _PKCS11_LOCK:
+        cached = _PKCS11_SESSION_CACHE
+        for lib_path in PKCS11_LIBS_CONOCIDAS:
+            if not Path(lib_path).exists():
+                continue
+            try:
+                lib = pkcs11.lib(lib_path)
+                tokens = list(lib.get_tokens())
+            except Exception:
+                continue
+            for tok in tokens:
+                try:
+                    serial = (tok.serial.decode(errors="ignore")
+                              if isinstance(tok.serial, bytes) else str(tok.serial)).strip()
+                    base = {"lib": lib_path, "token": tok.label.strip(), "serial_token": serial}
+                except Exception:
+                    continue
+                if not pin:
+                    encontrados.append({**base, "cn": f"(token {base['token']} — requiere PIN)",
+                                        "key_id": None, "listo": False})
+                    continue
+                # reusar la sesión viva del daemon si es el mismo módulo y PIN
+                nuevos = []
+                reusar = (cached["session"] is not None
+                          and cached["lib_path"] == lib_path
+                          and cached["pin"] == pin)
+                if reusar:
+                    try:
+                        nuevos = _certs_de_sesion(cached["session"], base)
+                    except Exception:
+                        reusar = False  # sesión muerta: abrir una nueva abajo
+                if not reusar:
+                    try:
+                        sess = tok.open(rw=False, user_pin=pin)
+                    except Exception as e:
+                        # un módulo que no puede abrir esta tarjeta (p.ej. OpenSC
+                        # sobre una faceta CNS sin PIN de usuario) no es un error:
+                        # otro módulo sí la expone. Se omite en silencio.
+                        log(f"PKCS#11 {Path(lib_path).name}/{base['token']}: {type(e).__name__}")
+                        continue
+                    try:
+                        nuevos = _certs_de_sesion(sess, base)
+                    except Exception as e:
+                        log(f"PKCS#11 {Path(lib_path).name}: no se pudieron leer certs ({type(e).__name__})")
+                        nuevos = []
+                    finally:
+                        try:
+                            sess.close()
+                        except Exception:
+                            pass
+                for c in nuevos:
+                    clave = (c.get("serial_token"), c["key_id"].hex() if c.get("key_id") else None)
+                    if clave in vistos:
+                        continue
+                    vistos.add(clave)
+                    encontrados.append(c)
+    return encontrados
+
+
+def validar_certificado(info):
+    """Comprueba que el certificado elegido esté OK para firmar.
+    Devuelve (ok, [mensajes])."""
+    import datetime
+    msgs = []
+    ok = True
+    if not info.get("listo"):
+        return False, ["El certificado no está accesible (¿PIN incorrecto o token desconectado?)"]
+    no_after = info.get("no_after")
+    if no_after:
+        ahora = datetime.datetime.now(datetime.timezone.utc)
+        if no_after < ahora:
+            ok = False
+            msgs.append(f"VENCIDO el {no_after:%d/%m/%Y}")
+        else:
+            dias = (no_after - ahora).days
+            msgs.append(f"Vence el {no_after:%d/%m/%Y} ({dias} días)")
+            if dias < 30:
+                msgs.append("Vence pronto: renuévalo")
+    if info.get("emisor"):
+        msgs.append(f"Emisor: {info['emisor']}")
+    return ok, msgs
+
+
 def make_signer(cfg, pin):
     """Construye el firmante: PKCS#11 (token USB) si cfg['token'], si no .p12.
 
-    Auto-detecta el certificado de usuario del token: el primero cuyo ID
-    tenga clave privada (los certs CA no tienen par de claves).
+    Usa el certificado elegido en cfg['cert_key_id'] + cfg['token_lib'] si existe;
+    si no, auto-detecta el primero con clave privada (los certs CA no la tienen).
 
     La sesión PKCS#11 se cachea a nivel de proceso (daemon vive todo el día,
     firma muchas veces): abrir una sesión nueva por cada firma sin cerrar la
@@ -184,6 +344,7 @@ def make_signer(cfg, pin):
         import pkcs11
         from pyhanko.sign.pkcs11 import PKCS11Signer
         lib_path = cfg.get("token_lib", "/usr/lib/bit4id/libbit4xpki.so")
+        elegido = cfg.get("cert_key_id")  # hex del ID del cert elegido
         with _PKCS11_LOCK:
             cached = _PKCS11_SESSION_CACHE
             if (cached["session"] is not None and cached["lib_path"] == lib_path
@@ -199,7 +360,17 @@ def make_signer(cfg, pin):
                 toks = list(lib.get_tokens())
                 if not toks:
                     raise SystemExit("No hay token USB conectado")
-                sess = toks[0].open(rw=False, user_pin=pin)
+                # si se eligió un token concreto por serial, usarlo
+                serial_pref = cfg.get("cert_token_serial")
+                tok = toks[0]
+                if serial_pref:
+                    for t in toks:
+                        s = (t.serial.decode(errors="ignore") if isinstance(t.serial, bytes)
+                             else str(t.serial)).strip()
+                        if s == serial_pref:
+                            tok = t
+                            break
+                sess = tok.open(rw=False, user_pin=pin)
                 cached["session"] = sess
                 cached["lib_path"] = lib_path
                 cached["pin"] = pin
@@ -215,7 +386,12 @@ def make_signer(cfg, pin):
             except Exception:
                 cid = None
             certs.append((label, cid))
-        # elegir el cert de usuario: con clave privada del mismo ID
+        # 1) el elegido explícitamente en configuración
+        if elegido:
+            for label, cid in certs:
+                if cid and cid.hex() == elegido:
+                    return PKCS11Signer(sess, key_id=cid, cert_label=label or None)
+        # 2) auto: el cert de usuario (con clave privada del mismo ID)
         for label, cid in certs:
             if not cid:
                 continue
@@ -1059,6 +1235,18 @@ def get_config_via_daemon():
     return call_daemon_op({"op": "GET_CONFIG"})["config"]
 
 
+def listar_certs_via_daemon(pin=None):
+    payload = {"op": "LISTAR_CERTS"}
+    if pin:
+        payload["pin"] = pin
+    return call_daemon_op(payload, timeout=90)["certs"]
+
+
+def elegir_cert_via_daemon(key_id, lib, serial_token=None):
+    call_daemon_op({"op": "ELEGIR_CERT", "key_id": key_id, "lib": lib,
+                    "serial_token": serial_token})
+
+
 def dispatch_gui_op(req, ctx):
     """Verbos del protocolo local de la GUI (F8), todos sobre el socket del daemon
     porque solo el daemon root ve el token/PIN real."""
@@ -1124,6 +1312,43 @@ def dispatch_gui_op(req, ctx):
     if op == "GET_CONFIG":
         return {"ok": True, "config": {k: v for k, v in cfg.items()
                                        if k not in ("pin", "apariencia")}}
+
+    if op == "LISTAR_CERTS":
+        # sólo el daemon ve el token; la GUI (usuario) pide por socket.
+        pin = req.get("pin") or get_pin(cfg, ctx)
+        try:
+            certs = listar_certificados(pin)
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        elegido = cfg.get("cert_key_id")
+        salida = []
+        for c in certs:
+            ok, msgs = validar_certificado(c)
+            salida.append({
+                "cn": c.get("cn", ""), "org": c.get("org", ""),
+                "emisor": c.get("emisor", ""), "token": c.get("token", ""),
+                "lib": c.get("lib", ""), "serial_token": c.get("serial_token", ""),
+                "key_id": c["key_id"].hex() if c.get("key_id") else None,
+                "listo": c.get("listo", False), "ok": ok, "avisos": msgs,
+                "activo": bool(c.get("key_id") and c["key_id"].hex() == elegido),
+            })
+        return {"ok": True, "certs": salida}
+
+    if op == "ELEGIR_CERT":
+        cfg["cert_key_id"] = req["key_id"]
+        cfg["token_lib"] = req["lib"]
+        if req.get("serial_token"):
+            cfg["cert_token_serial"] = req["serial_token"]
+        save_config(cfg)
+        # invalidar la sesión cacheada: el próximo firmado abre el token elegido
+        with _PKCS11_LOCK:
+            if _PKCS11_SESSION_CACHE["session"] is not None:
+                try:
+                    _PKCS11_SESSION_CACHE["session"].close()
+                except Exception:
+                    pass
+                _PKCS11_SESSION_CACHE["session"] = None
+        return {"ok": True}
 
     if op == "SET_APARIENCIA":
         tipo = req["tipo"]
@@ -1504,7 +1729,7 @@ def gui_main(pdf_path=None, tipo=None):
         def abrir_configuracion(self):
             win = tk.Toplevel(self.root)
             win.title("Configuración — sgd-signer")
-            win.geometry("560x640")
+            win.geometry("580x820")
             win.configure(bg=UI["bg"])
             win.transient(self.root)
             win.grab_set()
@@ -1547,6 +1772,31 @@ def gui_main(pdf_path=None, tipo=None):
                       font=UI["ui"], padx=8, pady=2).pack(anchor="w", padx=12, pady=(0, 10))
             self._refrescar_cfg_pin_status()
 
+            # --- certificado de firma ------------------------------------------
+            f_cert = seccion("Certificado de firma")
+            tk.Label(f_cert, text="Certificados detectados en tokens USB y smartcards conectados.",
+                     bg=UI["surface"], fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 6))
+            cont_cert = tk.Frame(f_cert, bg=UI["surface"])
+            cont_cert.pack(fill="x", padx=12, pady=(0, 6))
+            self.cfg_cert_lista = tk.Listbox(cont_cert, height=3, relief="flat", font=UI["mono"],
+                                             highlightbackground=UI["border"], highlightthickness=1,
+                                             activestyle="none", selectbackground=UI["ink"],
+                                             selectforeground="#FFFFFF")
+            self.cfg_cert_lista.pack(fill="x")
+            self.cfg_cert_detalle = tk.Label(f_cert, text="", bg=UI["surface"], fg=UI["muted"],
+                                             font=UI["ui"], justify="left", anchor="w")
+            self.cfg_cert_detalle.pack(fill="x", padx=12, pady=(0, 6))
+            fila_cert = tk.Frame(f_cert, bg=UI["surface"])
+            fila_cert.pack(fill="x", padx=12, pady=(0, 10))
+            tk.Button(fila_cert, text="Detectar certificados", command=self._cfg_detectar_certs,
+                      bg=UI["surface"], fg=UI["ink"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=8, pady=2).pack(side="left")
+            tk.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
+                      bg=UI["ink"], fg="#FFFFFF", relief="flat", font=UI["ui"],
+                      padx=8, pady=2, borderwidth=0).pack(side="right")
+            self._cfg_certs_data = []
+
             # --- imagen por tipo ----------------------------------------------
             f_img = seccion("Imagen de firma por tipo")
             self.cfg_tipo = tk.StringVar(value=self.tipo.get())
@@ -1564,10 +1814,15 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="right")
-            # vista previa de la imagen de firma
-            self.cfg_img_preview = tk.Label(f_img, text="", bg=UI["surface"], fg=UI["muted"],
-                                            font=UI["mono"], height=4)
-            self.cfg_img_preview.pack(anchor="w", padx=12, pady=(0, 8))
+            # vista previa: sobre tablero gris con borde, la imagen de firma es
+            # casi blanca y sobre fondo blanco no se distinguía nada.
+            marco_prev = tk.Frame(f_img, bg=UI["border"], highlightbackground=UI["border"],
+                                  highlightthickness=1)
+            marco_prev.pack(anchor="w", padx=12, pady=(0, 8))
+            self.cfg_img_preview = tk.Label(marco_prev, text="(sin imagen)", bg="#E8E8E6",
+                                            fg=UI["muted"], font=UI["mono"],
+                                            width=26, height=6)
+            self.cfg_img_preview.pack(padx=1, pady=1)
             # posición de la imagen dentro del stamp
             tk.Label(f_img, text="Posición de la imagen dentro de la firma", bg=UI["surface"],
                      fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(4, 2))
@@ -1575,15 +1830,26 @@ def gui_main(pdf_path=None, tipo=None):
             fila_pos.pack(fill="x", padx=12, pady=(0, 10))
             self.cfg_img_x = tk.StringVar(value="right")
             self.cfg_img_y = tk.StringVar(value="bottom")
-            tk.OptionMenu(fila_pos, self.cfg_img_x, "left", "center", "right").config(
+            tk.OptionMenu(fila_pos, self.cfg_img_x, "left", "center", "right",
+                          command=lambda _v: self._cfg_render_firma()).config(
                 bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
             fila_pos.winfo_children()[-1].pack(side="left")
-            tk.OptionMenu(fila_pos, self.cfg_img_y, "top", "middle", "bottom").config(
+            tk.OptionMenu(fila_pos, self.cfg_img_y, "top", "middle", "bottom",
+                          command=lambda _v: self._cfg_render_firma()).config(
                 bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
             fila_pos.winfo_children()[-1].pack(side="left", padx=(6, 0))
             tk.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
                       bg=UI["ink"], fg="#FFFFFF", relief="flat", font=UI["ui"],
                       padx=8, pady=2, borderwidth=0).pack(side="right")
+
+            # vista previa de la firma completa (imagen + texto) como saldrá
+            tk.Label(f_img, text="Así se verá la firma:", bg=UI["surface"],
+                     fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(4, 2))
+            marco_firma = tk.Frame(f_img, bg=UI["border"])
+            marco_firma.pack(anchor="w", padx=12, pady=(0, 10))
+            self.cfg_firma_canvas = tk.Canvas(marco_firma, width=310, height=80,
+                                              bg="#FFFFFF", highlightthickness=0)
+            self.cfg_firma_canvas.pack(padx=1, pady=1)
 
             # --- posición de la firma en la página ----------------------------
             f_pos = seccion("Posición de la firma en la página")
@@ -1610,6 +1876,8 @@ def gui_main(pdf_path=None, tipo=None):
 
             # cargar apariencia al final (ya existen cfg_pos_lbl y cfg_img_lbl)
             self._cfg_cargar_apariencia()
+            # detectar certificados en segundo plano (abrir el token tarda ~2s)
+            win.after(150, self._cfg_detectar_certs)
 
         def _refrescar_cfg_pin_status(self):
             try:
@@ -1651,6 +1919,113 @@ def gui_main(pdf_path=None, tipo=None):
                     self._cfg_cargar_apariencia()
                     return
 
+        def _cfg_detectar_certs(self):
+            self.cfg_cert_detalle.config(text="Buscando certificados en tokens y smartcards…")
+            self.cfg_cert_lista.delete(0, "end")
+            self.root.update_idletasks()
+            try:
+                certs = listar_certs_via_daemon()
+            except Exception as e:
+                self.cfg_cert_detalle.config(text=f"No se pudo detectar: {e}")
+                return
+            self._cfg_certs_data = certs
+            if not certs:
+                self.cfg_cert_detalle.config(
+                    text="No se detectaron certificados. Conecta el token/smartcard y guarda el PIN.")
+                return
+            sel = 0
+            for i, c in enumerate(certs):
+                marca = "✓ " if c.get("activo") else "  "
+                estado = "" if c.get("ok") else "  [REVISAR]"
+                self.cfg_cert_lista.insert("end", f"{marca}{c['cn']} — {c['token']}{estado}")
+                if c.get("activo"):
+                    sel = i
+            self.cfg_cert_lista.selection_set(sel)
+            self._cfg_mostrar_detalle_cert(sel)
+            self.cfg_cert_lista.bind(
+                "<<ListboxSelect>>",
+                lambda _e: self._cfg_mostrar_detalle_cert(
+                    self.cfg_cert_lista.curselection()[0]
+                    if self.cfg_cert_lista.curselection() else 0))
+
+        def _cfg_mostrar_detalle_cert(self, idx):
+            if not (0 <= idx < len(self._cfg_certs_data)):
+                return
+            c = self._cfg_certs_data[idx]
+            lineas = []
+            if c.get("org"):
+                lineas.append(c["org"])
+            lineas += c.get("avisos", [])
+            lineas.append(f"Dispositivo: {c.get('token','?')} (serie {c.get('serial_token','?')})")
+            estado = "Listo para firmar" if c.get("ok") else "No utilizable"
+            self.cfg_cert_detalle.config(
+                text=f"{estado}\n" + "\n".join(lineas),
+                fg=UI["ink"] if c.get("ok") else UI["danger_fg"])
+
+        def _cfg_usar_cert(self):
+            sel = self.cfg_cert_lista.curselection()
+            if not sel:
+                messagebox.showinfo("Certificado", "Primero pulsa 'Detectar certificados' y elige uno.")
+                return
+            c = self._cfg_certs_data[sel[0]]
+            if not c.get("key_id"):
+                messagebox.showwarning("Certificado", "Ese dispositivo no expone un certificado utilizable.")
+                return
+            if not c.get("ok") and not messagebox.askyesno(
+                    "Certificado con avisos",
+                    "\n".join(c.get("avisos", [])) + "\n\n¿Usarlo de todas formas?"):
+                return
+            try:
+                elegir_cert_via_daemon(c["key_id"], c["lib"], c.get("serial_token"))
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo guardar la elección: {e}")
+                return
+            messagebox.showinfo("Certificado", f"Se firmará con:\n{c['cn']}\n({c['token']})")
+            self._cfg_detectar_certs()
+
+        def _cfg_render_firma(self):
+            """Dibuja la firma como saldrá: imagen en su posición + texto.
+            Usa las mismas proporciones que el stamp real (155x35 pt)."""
+            cv = getattr(self, "cfg_firma_canvas", None)
+            if cv is None:
+                return
+            cv.delete("all")
+            W, H = 310, 80  # 2x la caja real de 155x35 pt
+            img = self.cfg_img_actual_path()
+            img_w = img_h = 0
+            if img and img.exists():
+                try:
+                    pil = Image.open(img)
+                    pil.thumbnail((W // 2, H - 8))
+                    self._cfg_firma_img_tk = ImageTk.PhotoImage(pil)
+                    img_w, img_h = pil.size
+                except Exception:
+                    img_w = img_h = 0
+            # posición de la imagen según los selectores (misma semántica que pyhanko)
+            ax = {"left": 4, "center": (W - img_w) // 2, "right": W - img_w - 4}
+            ay = {"top": 4, "middle": (H - img_h) // 2, "bottom": H - img_h - 4}
+            ix = ax.get(self.cfg_img_x.get(), W - img_w - 4)
+            iy = ay.get(self.cfg_img_y.get(), H - img_h - 4)
+            if img_w:
+                cv.create_image(ix, iy, image=self._cfg_firma_img_tk, anchor="nw")
+            # texto del stamp: al lado opuesto a la imagen para que no se tape
+            tx = 6 if self.cfg_img_x.get() == "right" else (img_w + 10 if img_w else 6)
+            texto = ("Firmado digitalmente por\nNOMBRE APELLIDO\nSENAMHI\n"
+                     "Motivo: Soy el autor del documento.\nFecha: 01.01.2026 09:00:00 -05:00")
+            cv.create_text(tx, 5, text=texto, anchor="nw", font=("TkDefaultFont", 6),
+                           fill="#111111", width=W - tx - 6)
+            cv.create_rectangle(1, 1, W - 1, H - 1, outline="#B8B8B4", dash=(2, 2))
+
+        def cfg_img_actual_path(self):
+            """Ruta de la imagen que se usará para el tipo elegido en Configuración."""
+            try:
+                apariencia = get_apariencia_via_daemon()
+            except Exception:
+                apariencia = {}
+            entry = apariencia.get(self.cfg_tipo.get(), {})
+            img = entry.get("imagen")
+            return Path(img) if img else IMG_POR_TIPO.get(self.cfg_tipo.get())
+
         def _cfg_cargar_apariencia(self):
             try:
                 apariencia = get_apariencia_via_daemon()
@@ -1677,6 +2052,7 @@ def gui_main(pdf_path=None, tipo=None):
                     self.cfg_img_preview.config(image="", text="(sin imagen)")
             except Exception:
                 self.cfg_img_preview.config(image="", text="(no se pudo previsualizar)")
+            self._cfg_render_firma()
 
         def _cfg_elegir_imagen(self):
             p = filedialog.askopenfilename(title="Imagen de firma",
