@@ -456,6 +456,10 @@ def check_ocsp_crl(signer):
 
 # --- protocolo WebSocket (Tramitedoc) ---------------------------------------
 def http_get(url, dest):
+    # el rutaDoc del portal trae subdirectorios (año, etc.) vía "|" → os.sep;
+    # crear el directorio padre antes de escribir o open(dest,"wb") revienta con
+    # [Errno 2] No such file or directory (root cause del error en GENERAR_DOCUMENTO).
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
