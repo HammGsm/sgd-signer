@@ -1317,8 +1317,6 @@ def gui_main(pdf_path=None, tipo=None):
     from tkinter import filedialog, messagebox, simpledialog, ttk
     from PIL import Image, ImageTk
 
-    DPI = 100
-
     def pill(parent, text, bg, fg):
         lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=UI["mono"],
                         padx=8, pady=2)
@@ -1334,6 +1332,11 @@ def gui_main(pdf_path=None, tipo=None):
             self.tk_img = None
             self.page_w_pt = self.page_h_pt = 0.0
             self.imagen_tipo_actual = None
+            self.scale = 1.0
+            self.zoom = 1.0            # 1.0 = 100% (72 dpi = 1pt por pixel)
+            self.zoom_modo = "ajustar"  # ajustar | ancho | manual
+            self.img_offset = (0, 0)    # offset de centrado de la página en el canvas
+            self._last_canvas_w = self._last_canvas_h = 0
 
             root.configure(bg=UI["bg"])
             style = ttk.Style()
@@ -1402,9 +1405,48 @@ def gui_main(pdf_path=None, tipo=None):
                                      bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
             self.lbl_pos.pack(side="left", padx=16)
 
-            self.canvas = tk.Canvas(root, bg="#DADAD8", highlightthickness=0, cursor="crosshair")
-            self.canvas.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+            # --- controles de zoom (a la derecha de la barra de navegación) ---
+            def btn_zoom(txt, cmd, w=3):
+                return tk.Button(nav, text=txt, command=cmd, bg=UI["surface"], fg=UI["ink"],
+                                 relief="flat", highlightbackground=UI["border"],
+                                 highlightthickness=1, font=UI["ui"], width=w)
+            btn_zoom("Ancho", self.zoom_ancho, 6).pack(side="right", padx=(4, 0))
+            btn_zoom("Ajustar", self.zoom_ajustar, 7).pack(side="right", padx=4)
+            btn_zoom("+", lambda: self.zoom_paso(1.25)).pack(side="right")
+            self.lbl_zoom = tk.Label(nav, text="100%", bg=UI["bg"], fg=UI["ink"],
+                                      font=UI["mono"], width=5)
+            self.lbl_zoom.pack(side="right", padx=2)
+            btn_zoom("−", lambda: self.zoom_paso(0.8)).pack(side="right")
+
+            # --- visor: canvas con scrollbars (el PDF puede exceder la ventana) --
+            visor = tk.Frame(root, bg=UI["border"], highlightbackground=UI["border"],
+                             highlightthickness=1)
+            visor.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+            self.canvas = tk.Canvas(visor, bg="#DADAD8", highlightthickness=0,
+                                    cursor="crosshair")
+            vsb = tk.Scrollbar(visor, orient="vertical", command=self.canvas.yview)
+            hsb = tk.Scrollbar(visor, orient="horizontal", command=self.canvas.xview)
+            self.canvas.config(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+            self.canvas.grid(row=0, column=0, sticky="nsew")
+            vsb.grid(row=0, column=1, sticky="ns")
+            hsb.grid(row=1, column=0, sticky="ew")
+            visor.rowconfigure(0, weight=1)
+            visor.columnconfigure(0, weight=1)
+
             self.canvas.bind("<Button-1>", self.click_pagina)
+            # rueda: scroll vertical; Shift+rueda: horizontal; Ctrl+rueda: zoom.
+            # Linux manda Button-4/5 en vez de MouseWheel.
+            self.canvas.bind("<MouseWheel>", self._on_wheel)
+            self.canvas.bind("<Shift-MouseWheel>", self._on_wheel_shift)
+            self.canvas.bind("<Control-MouseWheel>", self._on_wheel_ctrl)
+            self.canvas.bind("<Button-4>", self._on_wheel)
+            self.canvas.bind("<Button-5>", self._on_wheel)
+            self.canvas.bind("<Shift-Button-4>", self._on_wheel_shift)
+            self.canvas.bind("<Shift-Button-5>", self._on_wheel_shift)
+            self.canvas.bind("<Control-Button-4>", self._on_wheel_ctrl)
+            self.canvas.bind("<Control-Button-5>", self._on_wheel_ctrl)
+            # re-ajustar al redimensionar la ventana cuando el modo es "ajustar"
+            self.canvas.bind("<Configure>", self._on_canvas_resize)
 
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
@@ -1758,10 +1800,11 @@ def gui_main(pdf_path=None, tipo=None):
             pos = self.pos_pt
             box = firma_box(self.tipo.get(), self.page_w_pt, self.page_h_pt, pos=pos)
             x0, y0, x1, y1 = box
-            cx0 = x0 * self.scale
-            cx1 = x1 * self.scale
-            cy_top = (self.page_h_pt - y1) * self.scale
-            cy_bot = (self.page_h_pt - y0) * self.scale
+            ox, oy = self.img_offset
+            cx0 = x0 * self.scale + ox
+            cx1 = x1 * self.scale + ox
+            cy_top = (self.page_h_pt - y1) * self.scale + oy
+            cy_bot = (self.page_h_pt - y0) * self.scale + oy
             self.canvas.create_rectangle(
                 cx0, cy_top, cx1, cy_bot,
                 outline="#346538", width=2, dash=(4, 3), tags="preview_firma",
@@ -1773,9 +1816,12 @@ def gui_main(pdf_path=None, tipo=None):
 
         def render_pagina(self):
             self.page_w_pt, self.page_h_pt = _pdf_page_size_pt(self.pdf_path, self.pagina)
+            if self.zoom_modo in ("ajustar", "ancho"):
+                self.zoom = self._zoom_calculado(self.zoom_modo)
+            dpi = max(20, min(400, int(72 * self.zoom)))
             tmp = tempfile.mktemp(prefix="sgd-signer-preview-")
             subprocess.run(
-                ["pdftoppm", "-png", "-r", str(DPI), "-f", str(self.pagina), "-l", str(self.pagina),
+                ["pdftoppm", "-png", "-r", str(dpi), "-f", str(self.pagina), "-l", str(self.pagina),
                  self.pdf_path, tmp],
                 check=True,
             )
@@ -1789,12 +1835,80 @@ def gui_main(pdf_path=None, tipo=None):
             self.scale = img.width / self.page_w_pt
             self.tk_img = ImageTk.PhotoImage(img)
             self.canvas.delete("all")
-            self.canvas.config(scrollregion=(0, 0, img.width, img.height))
-            self.canvas.create_image(0, 0, anchor="nw", image=self.tk_img)
+            # centrar la página cuando es más chica que el canvas visible
+            cw = max(self.canvas.winfo_width(), img.width)
+            ch = max(self.canvas.winfo_height(), img.height)
+            ox = max(0, (cw - img.width) // 2)
+            oy = max(0, (ch - img.height) // 2)
+            self.canvas.config(scrollregion=(0, 0, cw, ch))
+            self.canvas.create_image(ox, oy, anchor="nw", image=self.tk_img)
+            self.img_offset = (ox, oy)
             os.remove(png_path)
             self.lbl_pagina.config(text=f"{self.pagina} / {self.n_paginas}")
-            self.pos_pt = None
+            self.lbl_zoom.config(text=f"{self.zoom * 100:.0f}%")
             self._dibujar_preview_firma()
+
+        # --- zoom / scroll ---------------------------------------------------
+        def _zoom_calculado(self, modo):
+            """Zoom para que la página quepa en el canvas ('ajustar') o llene el
+            ancho ('ancho'). Se recalcula al redimensionar la ventana."""
+            cw = self.canvas.winfo_width()
+            ch = self.canvas.winfo_height()
+            if cw <= 1 or ch <= 1 or not self.page_w_pt:
+                return self.zoom
+            margen = 16
+            z_ancho = (cw - margen) / self.page_w_pt
+            if modo == "ancho":
+                return max(0.1, z_ancho)
+            z_alto = (ch - margen) / self.page_h_pt
+            return max(0.1, min(z_ancho, z_alto))
+
+        def zoom_paso(self, factor):
+            if not self.pdf_path:
+                return
+            self.zoom_modo = "manual"
+            self.zoom = max(0.2, min(5.0, self.zoom * factor))
+            self.render_pagina()
+
+        def zoom_ajustar(self):
+            if not self.pdf_path:
+                return
+            self.zoom_modo = "ajustar"
+            self.render_pagina()
+
+        def zoom_ancho(self):
+            if not self.pdf_path:
+                return
+            self.zoom_modo = "ancho"
+            self.render_pagina()
+
+        def _wheel_dir(self, event):
+            """Normaliza la rueda: Windows/macOS usan event.delta, X11 Button-4/5."""
+            if getattr(event, "num", None) == 4:
+                return -1
+            if getattr(event, "num", None) == 5:
+                return 1
+            return -1 if event.delta > 0 else 1
+
+        def _on_wheel(self, event):
+            self.canvas.yview_scroll(self._wheel_dir(event) * 3, "units")
+
+        def _on_wheel_shift(self, event):
+            self.canvas.xview_scroll(self._wheel_dir(event) * 3, "units")
+
+        def _on_wheel_ctrl(self, event):
+            self.zoom_paso(0.9 if self._wheel_dir(event) > 0 else 1.1)
+            return "break"
+
+        def _on_canvas_resize(self, event):
+            # sólo re-renderiza en modos automáticos y si el tamaño cambió de verdad
+            if not self.pdf_path or self.zoom_modo == "manual":
+                return
+            if abs(event.width - self._last_canvas_w) < 20 and \
+               abs(event.height - self._last_canvas_h) < 20:
+                return
+            self._last_canvas_w, self._last_canvas_h = event.width, event.height
+            self.render_pagina()
 
         def cambiar_pagina(self, delta):
             if not self.pdf_path:
@@ -1802,13 +1916,19 @@ def gui_main(pdf_path=None, tipo=None):
             nueva = self.pagina + delta
             if 1 <= nueva <= self.n_paginas:
                 self.pagina = nueva
+                self.pos_pt = None  # la posición marcada era de la página anterior
                 self.render_pagina()
 
         def click_pagina(self, event):
             if not self.pdf_path:
                 return
-            x_pt = event.x / self.scale
-            y_pt = event.y / self.scale  # y desde arriba, como el original (PosicionXY)
+            # canvasx/y traduce el click a coordenadas del contenido (con scroll),
+            # y luego se resta el offset de centrado para llegar a la página.
+            ox, oy = self.img_offset
+            x_pt = (self.canvas.canvasx(event.x) - ox) / self.scale
+            y_pt = (self.canvas.canvasy(event.y) - oy) / self.scale  # y desde arriba (PosicionXY)
+            if not (0 <= x_pt <= self.page_w_pt and 0 <= y_pt <= self.page_h_pt):
+                return  # click fuera de la página: ignorar
             self.pos_pt = (x_pt, y_pt)
             self.lbl_pos.config(text=f"Posición fijada: x={x_pt:.0f} y={y_pt:.0f} pt (desde arriba)")
             self._dibujar_preview_firma()

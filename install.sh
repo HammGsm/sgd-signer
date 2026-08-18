@@ -60,17 +60,37 @@ EOF
 else
     echo "[3/4] Registrando tramitedoc:// en xdg ..."
     mkdir -p "$HOME/.local/share/applications"
+    # 1) handler del protocolo: NO debe aparecer en el menú (NoDisplay)
     cat > "$HOME/.local/share/applications/sgd-signer.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=sgd-signer (Tramitedoc SGD)
+Name=SGD-SIGNER (protocolo tramitedoc)
 Exec=$BIN_DIR/sgd-signer %u
+Icon=sgd-signer
 MimeType=x-scheme-handler/tramitedoc;
 NoDisplay=true
 EOF
     chmod +x "$HOME/.local/share/applications/sgd-signer.desktop"
+    # 2) entrada visible del menú: la GUI de firma (única app que ve el usuario)
+    cat > "$HOME/.local/share/applications/sgd-signer-gui.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=SGD-SIGNER
+Comment=Firma digital para el SGD de SENAMHI
+Exec=$BIN_DIR/sgd-signer gui %f
+Icon=sgd-signer
+Terminal=false
+Categories=Office;
+MimeType=application/pdf;
+EOF
+    chmod +x "$HOME/.local/share/applications/sgd-signer-gui.desktop"
+    # icono de la app
+    ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "$ICON_DIR"
+    [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$ICON_DIR/sgd-signer.png"
     xdg-mime default sgd-signer.desktop x-scheme-handler/tramitedoc || true
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 fi
 
 echo "[4/4] Listo."
