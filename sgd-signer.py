@@ -455,14 +455,36 @@ def check_ocsp_crl(signer):
 
 
 # --- protocolo WebSocket (Tramitedoc) ---------------------------------------
+def _chown_a_usuario(path):
+    """El daemon corre como root y escribe archivos/dirs como root; hruiz no puede
+    guardarlos (LibreOffice: 'error general de entrada y salida'). Chown al dueño
+    del primer ancestro NO-root (TDOCUMENTOS, propiedad de hruiz)."""
+    try:
+        # subir desde path hasta el primer ancestro existente cuyo dueño no sea root
+        d = path if os.path.isdir(path) else os.path.dirname(path)
+        while d and os.path.exists(d) and os.stat(d).st_uid == 0:
+            d = os.path.dirname(d)
+        if d and os.path.exists(d):
+            uid = os.stat(d).st_uid
+            gid = os.stat(d).st_gid
+            os.chown(path, uid, gid)
+    except Exception:
+        pass  # best-effort: si falla, el archivo queda como root (no rompe la descarga)
+
+
 def http_get(url, dest):
     # el rutaDoc del portal trae subdirectorios (año, etc.) vía "|" → os.sep;
     # crear el directorio padre antes de escribir o open(dest,"wb") revienta con
     # [Errno 2] No such file or directory (root cause del error en GENERAR_DOCUMENTO).
-    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    parent = os.path.dirname(dest) or "."
+    os.makedirs(parent, exist_ok=True)
     req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
         shutil.copyfileobj(r, f)
+    # el archivo y su subdir quedan como root; pasarlos a hruiz para que pueda
+    # abrirlos/guardarlos con LibreOffice (root cause del 'error general E/S').
+    _chown_a_usuario(dest)
+    _chown_a_usuario(parent)
     return dest
 
 
