@@ -798,27 +798,33 @@ def run_ws(url_ws, ctx):
     # el portal manda la url base sin sufijo (bare); si conectamos ahí nunca nos llega
     # nada del lado /BROWSER (verificado: bare/root no recibe, /APPCLIENT sí).
     url_app = url_ws.rstrip("/") + "/APPCLIENT"
-    ws = websocket.WebSocket(sslopt={"cert_reqs": ssl.CERT_NONE})
-    ws.connect(url_app, timeout=30)
-    log(f"Conectado a {url_app}")
     while True:
         try:
-            raw = ws.recv()
+            ws = websocket.WebSocket(sslopt={"cert_reqs": ssl.CERT_NONE})
+            ws.connect(url_app, timeout=30)
+            # sin timeout de lectura: el bridge mantiene la conexión abierta y el
+            # navegador manda mensajes esporádicamente. Con el timeout de 30s del
+            # connect, recv() moría por inactividad y el daemon dejaba de escuchar
+            # (root cause de "no abre el pdf/docx"). El C# original bloquea indefinido.
+            ws.settimeout(None)
+            log(f"Conectado a {url_app}")
+            while True:
+                raw = ws.recv()
+                if not raw:
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    log(f"Mensaje no-JSON: {raw[:200]}")
+                    continue
+                log(f"<- {msg.get('accion')} nr={msg.get('nrOperacion')}")
+                resp = handle_message(msg, ctx)
+                if resp:
+                    ws.send(json.dumps(resp))
+                    log(f"-> {resp.get('accion')} error={resp.get('error')}")
         except Exception as e:
-            log(f"WS cerrado: {e}")
-            break
-        if not raw:
-            continue
-        try:
-            msg = json.loads(raw)
-        except Exception:
-            log(f"Mensaje no-JSON: {raw[:200]}")
-            continue
-        log(f"<- {msg.get('accion')} nr={msg.get('nrOperacion')}")
-        resp = handle_message(msg, ctx)
-        if resp:
-            ws.send(json.dumps(resp))
-            log(f"-> {resp.get('accion')} error={resp.get('error')}")
+            log(f"WS cerrado: {e}; reconectando en 3s...")
+            time.sleep(3)
 
 
 def parse_tramitedoc_url(url):
