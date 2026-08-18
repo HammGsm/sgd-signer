@@ -476,6 +476,25 @@ def http_post_file(url, path):
 
 
 def open_path(p):
+    """Abre un archivo con la app predeterminada del usuario gráfico (hruiz).
+
+    El daemon corre como root sin DISPLAY, así que xdg-open directo no abre nada
+    en la sesión real. Se delega a la sesión gráfica de hruiz (mismo patrón que
+    confirmar_en_gui_usuario): runuser + entorno DISPLAY/DBUS detectado en vivo.
+    """
+    env_gui = _entorno_grafico_usuario("hruiz")
+    if env_gui:
+        env = dict(os.environ)
+        env.update(env_gui)
+        try:
+            subprocess.Popen(
+                ["runuser", "-u", "hruiz", "--", "xdg-open", p],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, env=env, start_new_session=True,
+            )
+            return
+        except Exception:
+            pass  # fallback abajo
     if sys.platform == "darwin":
         subprocess.Popen(["open", p])
     else:
