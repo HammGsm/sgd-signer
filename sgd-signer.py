@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """
-sgd-signer — Reemplazo multiplataforma (Linux/macOS) de Tramitedoc.exe + AppFirmaONPE.exe
-para el SGD de SENAMHI (https://www.senamhi.gob.pe/sgd).
+SGD-SIGNER — Firma digital para el SGD de SENAMHI (https://www.senamhi.gob.pe/sgd).
 
-Protocolo (reingeniería del binario .NET original, v1.0.4 / FirmaONPE 1.2.4):
+Compatible con Linux, macOS y Windows. Firma documentos PDF con certificado
+digital (token USB PKCS#11 o archivo .p12) y se integra con el portal de trámite
+documentario vía el protocolo `tramitedoc://`.
+
+Flujo:
   1. El portal lanza:  tramitedoc://?accion=TraDoc&urlBase=<base>&rutaPri=<dir>&ws=<wss://...>
-  2. Este script se registra como handler del esquema `tramitedoc://` (xdg-open / LaunchServices).
-  3. Conecta al WebSocket del servidor y responde mensajes JSON idénticos al original:
+  2. Este programa se registra como handler del esquema `tramitedoc://` (xdg-open / LaunchServices / registro de Windows).
+  3. Conecta al WebSocket del servidor y responde mensajes JSON:
        {destination:"BROWSER", error:"0", message:"OK", sender:"CSHARP", accion, nrOperacion}
-  4. EJECUTAR_FIRMA: descarga el PDF, lo firma (PAdES, campo FirmaDigital/VistoDigital,
-     sufijo [NF]/[F]/[VF]) y responde OK. El portal sube el firmado vía CARGAR_DOCUMENTO.
+  4. EJECUTAR_FIRMA: descarga el PDF, abre la GUI para que el usuario lo lea y firme
+     (PAdES, campo FirmaDigital/VistoDigital, sufijo [NF]/[F]/[VF]) y responde OK.
+     El portal sube el firmado vía CARGAR_DOCUMENTO.
 
 Uso:
   sgd-signer.py "tramitedoc://?accion=TraDoc&..."   # invocado por el OS (handler de URL)
   sgd-signer.py sign <pdf> [--tipo N] [--cert x.p12] [--pos x,y] [--pagina N]   # CLI directa
+  sgd-signer.py gui [<pdf>] [--tipo N]              # GUI manual (leer + firmar)
   sgd-signer.py pin <PIN>                          # guarda PIN del certificado (chmod 600)
   sgd-signer.py certs                               # lista certificados disponibles
 
@@ -682,26 +687,18 @@ def handle_message(msg, ctx):
             ruta = os.path.join(ruta_pri, m["rutaDoc"].replace("%7C", os.sep).replace("|", os.sep))
             http_get(url_base + m["urlDoc"], ruta)
             tipo = m.get("tipoFirma", "2")
-            # flujo original: al firmar se pide la clave (no se usa la guardada sin preguntar)
-            pin = pedir_pin_gui_usuario()
-            if not pin:
-                return reply("1", "Firma cancelada (no se ingresó el PIN)")
-            # validar el PIN contra el token real antes de firmar
-            try:
-                make_signer(cfg, pin)
-            except Exception as e:
-                return reply("1", f"PIN incorrecto: {e}")
-            if cfg.get("tsl_check", True) and not check_tsl(cfg, pin):
-                return reply("1", "Certificado no está en la TSL de INDECOPI")
             extra = {"Area": m.get("deMesaPartes", ""), "Telefono": m.get("fonoInstitucion", ""),
                      "Anexo": m.get("anexo", ""), "Url": m.get("pagWeb", "")}
             extra.update(parse_nombre_doc(m["rutaDoc"]))
-            out = sign_pdf(ruta, tipo, None, pin, extra=extra, cfg=cfg)
-            log(f"Firmado: {out}")
-            # el original abría el PDF en el FirmaONPE para que el usuario lo viera;
-            # aquí firmamos headless, así que abrimos el firmado con el visor por defecto.
-            open_path(out)
-            return reply(message="OK")
+            # flujo original: abrir la GUI para que el usuario LEA el documento y
+            # luego firme. La respuesta al portal se envía desde el op SIGN (cuando
+            # el usuario pulsa Firmar en la GUI), no aquí.
+            ctx["pending_firma"] = {"nr": nr, "accion": accion, "ruta": ruta,
+                                    "tipo": tipo, "extra": extra}
+            if not lanzar_gui_usuario(ruta, tipo):
+                ctx.pop("pending_firma", None)
+                return reply("1", "No se pudo abrir la GUI (sin sesión gráfica)")
+            return None  # responderá el op SIGN tras firmar
         except Exception as e:
             log(f"Error EJECUTAR_FIRMA: {e}")
             return reply("1", f"Error al ejecutar firma: {e}")
@@ -854,6 +851,29 @@ def pedir_pin_gui_usuario(usuario="hruiz", timeout=120):
         return None
 
 
+def lanzar_gui_usuario(pdf_path, tipo, usuario="hruiz"):
+    """Abre la GUI de firma (sgd-signer gui) en la sesión gráfica del usuario, con el
+    PDF ya cargado y el tipo preseleccionado. El daemon es root sin DISPLAY, así que
+    delega el lanzamiento a la sesión real (mismo patrón que confirmar/pedir PIN)."""
+    env_gui = _entorno_grafico_usuario(usuario)
+    if not env_gui:
+        log(f"AVISO: no se encontró sesión gráfica de {usuario}; no se puede abrir la GUI")
+        return False
+    env = dict(os.environ)
+    env.update(env_gui)
+    try:
+        subprocess.Popen(
+            ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3",
+             "/opt/sgd-signer/sgd-signer.py", "gui", pdf_path, "--tipo", tipo],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env, start_new_session=True,
+        )
+        return True
+    except Exception as e:
+        log(f"AVISO: no se pudo lanzar la GUI ({e})")
+        return False
+
+
 def run_ws(url_ws, ctx):
     import websocket
     # el bridge del portal enruta por sufijo de rol: browser -> /BROWSER, app -> /APPCLIENT.
@@ -869,6 +889,7 @@ def run_ws(url_ws, ctx):
             # connect, recv() moría por inactividad y el daemon dejaba de escuchar
             # (root cause de "no abre el pdf/docx"). El C# original bloquea indefinido.
             ws.settimeout(None)
+            ctx["ws"] = ws  # para que el op SIGN pueda responder al portal tras firmar
             log(f"Conectado a {url_app}")
             while True:
                 raw = ws.recv()
@@ -1024,12 +1045,28 @@ def dispatch_gui_op(req, ctx):
     cfg = ctx["cfg"]
 
     if op == "SIGN":
+        pend = ctx.get("pending_firma")
+        es_pendiente = bool(pend and pend["ruta"] == req["pdf_path"])
+        tipo = pend["tipo"] if es_pendiente else req["tipo"]
+        extra = pend["extra"] if es_pendiente else (req.get("extra") or {})
         out = sign_pdf(
-            req["pdf_path"], req["tipo"], None, get_pin(cfg, ctx),
+            req["pdf_path"], tipo, None, get_pin(cfg, ctx),
             pos=tuple(req["pos"]) if req.get("pos") else None,
-            pagina=req.get("pagina", 1), extra=req.get("extra") or {},
-            cfg=cfg,
+            pagina=req.get("pagina", 1), extra=extra, cfg=cfg,
         )
+        if es_pendiente:
+            # la firma vino del flujo del portal (EJECUTAR_FIRMA): responder OK por el WS
+            ctx.pop("pending_firma", None)
+            ws = ctx.get("ws")
+            if ws:
+                try:
+                    ws.send(json.dumps({
+                        "destination": "BROWSER", "error": "0", "message": "OK",
+                        "sender": "CSHARP", "accion": pend["accion"],
+                        "nrOperacion": pend["nr"],
+                    }))
+                except Exception as e:
+                    log(f"AVISO: no se pudo responder al portal: {e}")
         return {"ok": True, "out": out}
 
     if op == "GET_STATUS":
@@ -1213,7 +1250,7 @@ def cmd_certs(args):
         print("No hay certificados en ~/.sgd-signer/certs/ ni en el directorio actual.")
 
 
-# --- F8: GUI manual (fork FirmaONPE) — visor PDF + firmar archivo local -----
+# --- GUI manual — visor PDF + firmar archivo local -------------------------
 def _pdf_page_size_pt(pdf_path, pagina):
     """Tamaño de página en puntos vía pdfinfo (poppler-utils, ya instalado)."""
     out = subprocess.run(
@@ -1242,8 +1279,8 @@ NOMBRES_TIPO = {"1": "1 · Titular", "2": "2 · Básica", "3": "3 · V°B°",
                 "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción"}
 
 
-def gui_main(pdf_path=None):
-    """GUI de firma manual (fork FirmaONPE): abrir PDF, elegir tipo de firma,
+def gui_main(pdf_path=None, tipo=None):
+    """GUI de firma manual: abrir PDF, elegir tipo de firma,
     click en la página para posición/imagen por tipo (persistente), gestión de
     PIN con indicador de estado. Tkinter + pdftoppm (poppler-utils, ya instalado)
     — sin dependencias nuevas. Estilo: minimalist-ui (warm monochrome, sin
@@ -1358,6 +1395,9 @@ def gui_main(pdf_path=None):
 
             if pdf_path:
                 self.cargar(pdf_path)
+            if tipo:
+                self.tipo.set(tipo)
+                self._cargar_pos_guardada()
 
         # --- estado del PIN --------------------------------------------------
         def _refrescar_estado_pin(self):
@@ -1730,7 +1770,7 @@ def gui_main(pdf_path=None):
                 self.btn_firmar.config(state="normal")
 
     root = tk.Tk()
-    root.title("sgd-signer — Firma manual (fork FirmaONPE)")
+    root.title("SGD-SIGNER — Firma digital")
     root.geometry("760x920")
     root.configure(bg=UI["bg"])
     App(root)
@@ -1766,6 +1806,7 @@ def main():
     p.add_argument("--no-tsl", action="store_true", help="salta verificación TSL")
     p = sub.add_parser("gui", help="GUI manual: abrir PDF, elegir tipo/posición, firmar")
     p.add_argument("pdf", nargs="?", help="PDF a abrir directamente (opcional)")
+    p.add_argument("--tipo", default=None, choices=sorted(TIPOS), help="tipo de firma preseleccionado")
     args = ap.parse_args()
 
     if args.cmd == "certs":
@@ -1775,7 +1816,7 @@ def main():
     if args.cmd == "sign":
         return cmd_sign(args)
     if args.cmd == "gui":
-        return gui_main(args.pdf)
+        return gui_main(args.pdf, tipo=args.tipo)
     ap.print_help()
 
 
