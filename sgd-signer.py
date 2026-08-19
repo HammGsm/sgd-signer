@@ -2125,10 +2125,12 @@ def gui_main(pdf_path=None, tipo=None):
     import ttkbootstrap as tb
     from pytablericons import TablerIcons, OutlineIcon
 
-    def _icono(nombre, color="#007AFF", size=18):
-        """Carga un icono Tabler como PhotoImage para usar en botones."""
+    def _icono(nombre, color="#007AFF", size=20, stroke=1.5):
+        """Carga un icono Tabler como PhotoImage para usar en botones.
+        stroke 1.5 (no 2.0) a 20px: a 18px el stroke por defecto se ve
+        grueso y pixelado; 1.5 da trazo fino y nítido."""
         try:
-            img = TablerIcons.load(nombre, size=size, color=color)
+            img = TablerIcons.load(nombre, size=size, color=color, stroke_width=stroke)
             return ImageTk.PhotoImage(img)
         except Exception:
             return None
