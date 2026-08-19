@@ -2164,6 +2164,10 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=10, pady=4).pack(side="right", padx=6, pady=6)
+            tk.Button(pin_bar, text="Doctor", command=self.abrir_doctor,
+                      bg=UI["surface"], fg=UI["ink"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=10, pady=4).pack(side="right", padx=6, pady=6)
             self._refrescar_estado_pin()
 
             # --- barra archivo/tipo ------------------------------------------
@@ -2303,6 +2307,79 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showerror("PIN rechazado", str(e))
 
         # --- ventana de configuración ----------------------------------------
+        def abrir_doctor(self):
+            """Doctor: muestra el estado de instalación y permite instalar lo que
+            falta (daemon, esquema, deps, servicio). El middleware Bit4id requiere
+            sudo: se muestra con instrucciones y enlace."""
+            win = tk.Toplevel(self.root)
+            win.title("Doctor — sgd-signer")
+            win.geometry("560x520")
+            win.minsize(480, 360)
+            win.configure(bg=UI["bg"])
+            win.transient(self.root)
+            win.grab_set()
+
+            _cont = tk.Frame(win, bg=UI["bg"])
+            _cont.pack(fill="both", expand=True, padx=16, pady=16)
+            _cv = tk.Canvas(_cont, bg=UI["bg"], highlightthickness=0)
+            _sb = tk.Scrollbar(_cont, orient="vertical", command=_cv.yview)
+            _cv.configure(yscrollcommand=_sb.set)
+            _sb.pack(side="right", fill="y")
+            _cv.pack(side="left", fill="both", expand=True)
+            body = tk.Frame(_cv, bg=UI["bg"])
+            _win_id = _cv.create_window((0, 0), window=body, anchor="nw")
+            body.configure(padx=8, pady=8)
+
+            def _ajustar(_e=None):
+                _cv.configure(scrollregion=_cv.bbox("all"))
+                _cv.itemconfigure(_win_id, width=_cv.winfo_width())
+            body.bind("<Configure>", _ajustar)
+            _cv.bind("<Configure>", _ajustar)
+
+            def _render():
+                for w in body.winfo_children():
+                    w.destroy()
+                try:
+                    diag = diagnostico()
+                except Exception as e:
+                    tk.Label(body, text=f"Error al diagnosticar: {e}", bg=UI["bg"],
+                             fg=UI["danger"], font=UI["ui"]).pack(anchor="w")
+                    return
+                faltan_auto = [d for d in diag if d["accion"]]
+                for d in diag:
+                    marca = "✓" if d["ok"] else "✗"
+                    color = UI["accent_fg"] if d["ok"] else UI["danger_fg"]
+                    fila = tk.Frame(body, bg=UI["bg"])
+                    fila.pack(fill="x", pady=2)
+                    tk.Label(fila, text=f"{marca}  {d['item']}", bg=UI["bg"],
+                             fg=color, font=UI["ui_b"], width=30, anchor="w").pack(side="left")
+                    tk.Label(fila, text=d["detalle"], bg=UI["bg"], fg=UI["muted"],
+                             font=UI["ui"], anchor="w").pack(side="left", padx=8)
+                if faltan_auto:
+                    tk.Button(body, text="Instalar lo que falta",
+                              command=lambda: self._instalar_doctor(body, faltan_auto),
+                              bg=UI["ink"], fg="#FFFFFF", relief="flat",
+                              font=UI["ui_b"], padx=12, pady=6).pack(pady=(16, 4))
+                else:
+                    tk.Label(body, text="Todo en orden ✓", bg=UI["bg"], fg=UI["accent_fg"],
+                             font=UI["ui_b"]).pack(pady=(16, 4))
+
+            def _instalar_doctor(body, faltan_auto):
+                acciones = [d["accion"] for d in faltan_auto]
+                res = auto_instalar(acciones)
+                for w in body.winfo_children():
+                    w.destroy()
+                for item, ok, msg in res:
+                    marca = "✓" if ok else "✗"
+                    color = UI["accent_fg"] if ok else UI["danger_fg"]
+                    tk.Label(body, text=f"{marca}  {item}: {msg}", bg=UI["bg"],
+                             fg=color, font=UI["ui"], anchor="w").pack(anchor="w", pady=2)
+                tk.Button(body, text="Re-diagnosticar", command=_render,
+                          bg=UI["ink"], fg="#FFFFFF", relief="flat",
+                          font=UI["ui_b"], padx=12, pady=6).pack(pady=(16, 4))
+
+            _render()
+
         def abrir_configuracion(self):
             win = tk.Toplevel(self.root)
             win.title("Configuración — sgd-signer")
