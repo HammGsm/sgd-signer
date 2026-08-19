@@ -332,6 +332,22 @@ def validar_certificado(info):
     return ok, msgs
 
 
+def _detectar_token_pkcs11():
+    """Devuelve la ruta del primer módulo PKCS#11 que tiene un token presente,
+    o None si no hay ninguno. No abre sesión (no toca el PIN)."""
+    import pkcs11
+    for lib_path in PKCS11_LIBS_CONOCIDAS:
+        if not Path(lib_path).exists():
+            continue
+        try:
+            lib = pkcs11.lib(lib_path)
+            if list(lib.get_tokens()):
+                return lib_path
+        except Exception:
+            continue
+    return None
+
+
 def make_signer(cfg, pin):
     """Construye el firmante: PKCS#11 (token USB) si cfg['token'], si no .p12.
 
@@ -343,16 +359,17 @@ def make_signer(cfg, pin):
     anterior agota los slots de login del token y el 2do+ intento revienta
     con UserAlreadyLoggedIn. Root cause fix, no parche por caller.
     """
-    # Root cause: la señal de "usar token USB" es token_lib (la ruta del
-    # módulo PKCS#11), no un flag separado. ELEGIR_CERT guarda token_lib al
-    # elegir un certificado del token. Antes se dependía de cfg["token"], un
-    # flag que podía quedar sin setear (o ponerse a True falsamente) y que,
-    # de estar ausente, hacía caer aquí a la rama .p12 -> pick_cert() ->
-    # input() en el daemon sin stdin -> EOFError al guardar el PIN.
-    if cfg.get("token_lib") or cfg.get("token"):
+    # Auto-detectar el módulo PKCS#11 si hay un token conectado, aunque el
+    # usuario no haya elegido certificado antes (SET_PIN valida el PIN contra
+    # el token). Evita caer a la rama .p12 -> pick_cert() -> input() en el
+    # daemon sin stdin (EOFError). El flag cfg["token"] ya no se usa: la señal
+    # real es tener un módulo PKCS#11 con un token presente.
+    lib_path = cfg.get("token_lib")
+    if not lib_path:
+        lib_path = _detectar_token_pkcs11()
+    if lib_path:
         import pkcs11
         from pyhanko.sign.pkcs11 import PKCS11Signer
-        lib_path = cfg.get("token_lib", "/usr/lib/bit4id/libbit4xpki.so")
         elegido = cfg.get("cert_key_id")  # hex del ID del cert elegido
         with _PKCS11_LOCK:
             cached = _PKCS11_SESSION_CACHE
