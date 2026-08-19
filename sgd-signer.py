@@ -2063,68 +2063,6 @@ UI = {
     "mono": ("SF Mono", 9), "mono_b": ("SF Mono", 9, "bold"),
     "ui": ("Helvetica Neue", 10), "ui_b": ("Helvetica Neue", 10, "bold"),
 }
-
-
-class RoundedButton(tk.Canvas):
-    """Botón estilo macOS: esquinas redondeadas, sin borde duro, hover suave.
-    Tkinter no tiene border-radius nativo, así que se dibuja en un Canvas.
-    Compatible Linux/Windows (solo tk)."""
-
-    def __init__(self, master, text, command=None, bg="#007AFF", fg="#FFFFFF",
-                 font=None, padx=14, pady=6, radius=7, state="normal"):
-        self._bg = bg
-        self._fg = fg
-        self._cmd = command
-        self._font = font or ("Helvetica Neue", 10)
-        self._radius = radius
-        self._state = state
-        # medir el texto para dimensionar el canvas
-        tmp = tk.Label(master, text=text, font=self._font)
-        w = tmp.winfo_reqwidth() + padx * 2
-        h = tmp.winfo_reqheight() + pady * 2
-        tmp.destroy()
-        super().__init__(master, width=w, height=h, bg=master.cget("bg"),
-                         highlightthickness=0, bd=0)
-        self._text = text
-        self._w, self._h = w, h
-        self._draw()
-        self.bind("<Button-1>", self._click)
-        self.bind("<Enter>", lambda _e: self._hover(True))
-        self.bind("<Leave>", lambda _e: self._hover(False))
-
-    def _draw(self):
-        self.delete("all")
-        fill = self._bg if self._state == "normal" else "#C7C7CC"
-        self.create_rounded(self._radius, self._radius,
-                            self._w - self._radius, self._h - self._radius,
-                            r=self._radius, fill=fill, outline="")
-        self.create_text(self._w / 2, self._h / 2, text=self._text,
-                         fill=self._fg, font=self._font)
-
-    def create_rounded(self, x1, y1, x2, y2, r, **kw):
-        pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
-               x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
-               x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
-        return self.create_polygon(pts, smooth=True, **kw)
-
-    def _hover(self, on):
-        if self._state != "normal":
-            return
-        self.delete("all")
-        fill = self._bg if not on else "#0060DF"
-        self.create_rounded(self._radius, self._radius,
-                            self._w - self._radius, self._h - self._radius,
-                            r=self._radius, fill=fill, outline="")
-        self.create_text(self._w / 2, self._h / 2, text=self._text,
-                         fill=self._fg, font=self._font)
-
-    def _click(self, _e):
-        if self._state == "normal" and self._cmd:
-            self._cmd()
-
-    def set_state(self, state):
-        self._state = state
-        self._draw()
 NOMBRES_TIPO = {"1": "1 · Titular", "2": "2 · Básica", "3": "3 · V°B°",
                 "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción"}
 
@@ -2184,6 +2122,66 @@ def gui_main(pdf_path=None, tipo=None):
     import tkinter as tk
     from tkinter import filedialog, messagebox, simpledialog, ttk
     from PIL import Image, ImageTk
+
+    class RoundedButton(tk.Canvas):
+        """Botón estilo macOS: esquinas redondeadas, sin borde duro, hover suave.
+        Tkinter no tiene border-radius nativo, así que se dibuja en un Canvas.
+        Compatible Linux/Windows (solo tk)."""
+
+        def __init__(self, master, text, command=None, bg="#007AFF", fg="#FFFFFF",
+                     font=None, padx=14, pady=6, radius=7, state="normal"):
+            self._bg = bg
+            self._fg = fg
+            self._cmd = command
+            self._font = font or ("Helvetica Neue", 10)
+            self._radius = radius
+            self._state = state
+            tmp = tk.Label(master, text=text, font=self._font)
+            w = tmp.winfo_reqwidth() + padx * 2
+            h = tmp.winfo_reqheight() + pady * 2
+            tmp.destroy()
+            super().__init__(master, width=w, height=h, bg=master.cget("bg"),
+                             highlightthickness=0, bd=0)
+            self._text = text
+            self._w, self._h = w, h
+            self._draw()
+            self.bind("<Button-1>", self._click)
+            self.bind("<Enter>", lambda _e: self._hover(True))
+            self.bind("<Leave>", lambda _e: self._hover(False))
+
+        def _draw(self):
+            self.delete("all")
+            fill = self._bg if self._state == "normal" else "#C7C7CC"
+            self.create_rounded(self._radius, self._radius,
+                                self._w - self._radius, self._h - self._radius,
+                                r=self._radius, fill=fill, outline="")
+            self.create_text(self._w / 2, self._h / 2, text=self._text,
+                             fill=self._fg, font=self._font)
+
+        def create_rounded(self, x1, y1, x2, y2, r, **kw):
+            pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+                   x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+                   x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+            return self.create_polygon(pts, smooth=True, **kw)
+
+        def _hover(self, on):
+            if self._state != "normal":
+                return
+            self.delete("all")
+            fill = self._bg if not on else "#0060DF"
+            self.create_rounded(self._radius, self._radius,
+                                self._w - self._radius, self._h - self._radius,
+                                r=self._radius, fill=fill, outline="")
+            self.create_text(self._w / 2, self._h / 2, text=self._text,
+                             fill=self._fg, font=self._font)
+
+        def _click(self, _e):
+            if self._state == "normal" and self._cmd:
+                self._cmd()
+
+        def set_state(self, state):
+            self._state = state
+            self._draw()
 
     def pill(parent, text, bg, fg):
         lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=UI["mono"],
