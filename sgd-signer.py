@@ -2123,22 +2123,6 @@ def gui_main(pdf_path=None, tipo=None):
     from tkinter import filedialog, messagebox, simpledialog, ttk
     from PIL import Image, ImageTk
     import ttkbootstrap as tb
-    from pytablericons import TablerIcons, OutlineIcon
-
-    def _icono(nombre, color="#007AFF", size=20, stroke=1.5, fondo="#FFFFFF"):
-        """Carga un icono Tabler como PhotoImage para usar en botones.
-        Tkinter PhotoImage NO respeta el canal alfa de RGBA: el fondo
-        transparente se muestra blanco/transparente (iconos 'fantasma').
-        Fix: componer el icono sobre el color de fondo del botón -> RGB."""
-        try:
-            img = TablerIcons.load(nombre, size=size, color=color, stroke_width=stroke)
-            if img.mode == "RGBA":
-                bg = Image.new("RGB", img.size, fondo)
-                bg.paste(img, mask=img.split()[-1])
-                img = bg
-            return ImageTk.PhotoImage(img)
-        except Exception:
-            return None
 
     def pill(parent, text, bg, fg):
         lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=UI["mono"],
@@ -2160,7 +2144,6 @@ def gui_main(pdf_path=None, tipo=None):
             self.zoom_modo = "ajustar"  # ajustar | ancho | manual
             self.img_offset = (0, 0)    # offset de centrado de la página en el canvas
             self._last_canvas_w = self._last_canvas_h = 0
-            self._iconos = {}  # referencias vivas a PhotoImage (evita GC)
 
             root.configure(bg=UI["bg"])
             # NO llamar style.theme_use("clam"): anula el tema ttkbootstrap
@@ -2181,22 +2164,17 @@ def gui_main(pdf_path=None, tipo=None):
             self.pin_pill.pack(side="left", pady=8)
             tb.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
                        bootstyle="primary").pack(side="right", padx=10, pady=6)
-            self._iconos["cfg"] = _icono(OutlineIcon.SETTINGS, "#1D1D1F")
-            tb.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
-                      image=self._iconos["cfg"], compound="left",
+            tb.Button(pin_bar, text="⚙ Configuración", command=self.abrir_configuracion,
                       bootstyle="light").pack(side="right", padx=6, pady=6)
-            self._iconos["doctor"] = _icono(OutlineIcon.CHECKLIST, "#1D1D1F")
-            tb.Button(pin_bar, text="Doctor", command=self.abrir_doctor,
-                      image=self._iconos["doctor"], compound="left",
+            tb.Button(pin_bar, text="✓ Doctor", command=self.abrir_doctor,
                       bootstyle="light").pack(side="right", padx=6, pady=6)
             self._refrescar_estado_pin()
 
             # --- barra archivo/tipo ------------------------------------------
             top = tk.Frame(root, bg=UI["bg"])
             top.pack(fill="x", padx=12, pady=(0, 6))
-            self._iconos["abrir"] = _icono(OutlineIcon.FILE, "#FFFFFF", fondo="#007AFF")
-            tb.Button(top, text="Abrir PDF", command=self.abrir, image=self._iconos["abrir"],
-                      compound="left", bootstyle="primary").pack(side="left")
+            tb.Button(top, text="📂 Abrir PDF", command=self.abrir,
+                      bootstyle="primary").pack(side="left")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
                                         fg=UI["muted"], font=UI["ui"])
             self.lbl_archivo.pack(side="left", padx=10)
@@ -2267,14 +2245,10 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self._iconos["firmar"] = _icono(OutlineIcon.PENCIL, "#FFFFFF", fondo="#007AFF")
-            self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
-                                         image=self._iconos["firmar"], compound="left",
+            self.btn_firmar = tb.Button(bottom, text="✍ Firmar", command=self.firmar,
                                          state="disabled", bootstyle="primary")
             self.btn_firmar.pack(side="left")
-            self._iconos["masiva"] = _icono(OutlineIcon.STACK, "#1D1D1F")
-            tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
-                      image=self._iconos["masiva"], compound="left",
+            tb.Button(bottom, text="⧉ Firma masiva…", command=self.firma_masiva,
                       bootstyle="light").pack(side="left", padx=(8, 0))
             self.lbl_status = tk.Label(bottom, text="", bg=UI["bg"], fg=UI["muted"], font=UI["mono"])
             self.lbl_status.pack(side="left", padx=10)
