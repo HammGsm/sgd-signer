@@ -33,14 +33,20 @@ chmod +x "$BIN_DIR/sgd-signer"
 
 # 4. registro del protocolo tramitedoc://
 if [ "$(uname)" = "Darwin" ]; then
-    echo "[3/4] Registrando tramitedoc:// en LaunchServices ..."
-    cat > "$HOME/Library/LaunchAgents/pe.senamhi.sgd-signer.plist" <<EOF
+    echo "[3/4] Registrando tramitedoc:// en LaunchServices (bundle .app) ..."
+    APP="$HOME/Applications/SGD-Signer.app"
+    mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+    cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleName</key><string>SGD-Signer</string>
+    <key>CFBundleDisplayName</key><string>SGD-Signer</string>
     <key>CFBundleIdentifier</key><string>pe.senamhi.sgd-signer</string>
-    <key>CFBundleName</key><string>sgd-signer</string>
+    <key>CFBundleVersion</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleExecutable</key><string>launcher</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleURLTypes</key>
     <array>
@@ -53,10 +59,17 @@ if [ "$(uname)" = "Darwin" ]; then
 </dict>
 </plist>
 EOF
-    # registrar el esquema (requiere que el LaunchAgent esté cargado)
+    cat > "$APP/Contents/MacOS/launcher" <<EOF
+#!/usr/bin/env bash
+exec "$VENV/bin/python" "$APP_DIR/sgd-signer.py" "\$@"
+EOF
+    chmod +x "$APP/Contents/MacOS/launcher"
+    [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP/Contents/Resources/icon.png"
+    # registrar el esquema en LaunchServices (esto es lo que hace que el navegador
+    # pueda lanzar tramitedoc:// con sgd-signer)
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-        -f "$HOME/Library/LaunchAgents/pe.senamhi.sgd-signer.plist" || true
-    echo "    Nota: en macOS el navegador preguntará la primera vez si abrir tramitedoc:// con sgd-signer."
+        -f "$APP" || true
+    echo "    Nota: en macOS el navegador preguntará la primera vez si abrir tramitedoc:// con SGD-Signer."
 else
     echo "[3/4] Registrando tramitedoc:// en xdg ..."
     mkdir -p "$HOME/.local/share/applications"
