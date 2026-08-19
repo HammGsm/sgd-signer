@@ -2123,69 +2123,6 @@ def gui_main(pdf_path=None, tipo=None):
     from tkinter import filedialog, messagebox, simpledialog, ttk
     from PIL import Image, ImageTk
 
-    class RoundedButton(tk.Canvas):
-        """Botón estilo macOS: esquinas redondeadas, sin borde duro, hover suave.
-        Tkinter no tiene border-radius nativo, así que se dibuja en un Canvas.
-        Compatible Linux/Windows (solo tk)."""
-
-        def __init__(self, master, text, command=None, bg="#007AFF", fg="#FFFFFF",
-                     font=None, padx=14, pady=6, radius=7, state="normal"):
-            self._bg = bg
-            self._fg = fg
-            self._cmd = command
-            self._font = font or ("Helvetica Neue", 10)
-            self._radius = radius
-            self._state = state
-            tmp = tk.Label(master, text=text, font=self._font)
-            w = tmp.winfo_reqwidth() + padx * 2
-            h = tmp.winfo_reqheight() + pady * 2
-            tmp.destroy()
-            super().__init__(master, width=w, height=h, bg=master.cget("bg"),
-                             highlightthickness=0, bd=0)
-            self._text = text
-            self._w, self._h = w, h
-            # mantener el objeto vivo: RoundedButton(...).pack() no guarda
-            # referencia y el GC destruiría el Canvas (invalid command name).
-            master._rb_refs = getattr(master, "_rb_refs", []) + [self]
-            self._draw()
-            self.bind("<Button-1>", self._click)
-            self.bind("<Enter>", lambda _e: self._hover(True))
-            self.bind("<Leave>", lambda _e: self._hover(False))
-
-        def _draw(self):
-            self.delete("all")
-            fill = self._bg if self._state == "normal" else "#C7C7CC"
-            self.create_rounded(self._radius, self._radius,
-                                self._w - self._radius, self._h - self._radius,
-                                r=self._radius, fill=fill, outline="")
-            self.create_text(self._w / 2, self._h / 2, text=self._text,
-                             fill=self._fg, font=self._font)
-
-        def create_rounded(self, x1, y1, x2, y2, r, **kw):
-            pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
-                   x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
-                   x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
-            return self.create_polygon(pts, smooth=True, **kw)
-
-        def _hover(self, on):
-            if self._state != "normal":
-                return
-            self.delete("all")
-            fill = self._bg if not on else "#0060DF"
-            self.create_rounded(self._radius, self._radius,
-                                self._w - self._radius, self._h - self._radius,
-                                r=self._radius, fill=fill, outline="")
-            self.create_text(self._w / 2, self._h / 2, text=self._text,
-                             fill=self._fg, font=self._font)
-
-        def _click(self, _e):
-            if self._state == "normal" and self._cmd:
-                self._cmd()
-
-        def set_state(self, state):
-            self._state = state
-            self._draw()
-
     def pill(parent, text, bg, fg):
         lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=UI["mono"],
                         padx=8, pady=2)
@@ -2225,7 +2162,7 @@ def gui_main(pdf_path=None, tipo=None):
                      font=UI["ui_b"]).pack(side="left", padx=(10, 8), pady=8)
             self.pin_pill = pill(pin_bar, "…", UI["warn_bg"], UI["warn_fg"])
             self.pin_pill.pack(side="left", pady=8)
-            RoundedButton(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
+            tk.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
                           bg=UI["accent"], fg="#FFFFFF", font=UI["ui"],
                           padx=12, pady=4).pack(side="right", padx=10, pady=6)
             tk.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
@@ -2325,7 +2262,7 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self.btn_firmar = RoundedButton(bottom, text="Firmar", command=self.firmar,
+            self.btn_firmar = tk.Button(bottom, text="Firmar", command=self.firmar,
                                             bg=UI["accent"], fg="#FFFFFF", font=UI["ui_b"],
                                             padx=16, pady=6, state="disabled")
             self.btn_firmar.pack(side="left")
@@ -2423,7 +2360,7 @@ def gui_main(pdf_path=None, tipo=None):
                     tk.Label(fila, text=d["detalle"], bg=UI["bg"], fg=UI["muted"],
                              font=UI["ui"], anchor="w").pack(side="left", padx=8)
                 if faltan_auto:
-                    RoundedButton(body, text="Instalar lo que falta",
+                    tk.Button(body, text="Instalar lo que falta",
                                   command=lambda: self._instalar_doctor(body, faltan_auto),
                                   bg=UI["accent"], fg="#FFFFFF", font=UI["ui_b"],
                                   padx=14, pady=6).pack(pady=(16, 4))
@@ -2441,7 +2378,7 @@ def gui_main(pdf_path=None, tipo=None):
                     color = UI["accent_fg"] if ok else UI["danger_fg"]
                     tk.Label(body, text=f"{marca}  {item}: {msg}", bg=UI["bg"],
                              fg=color, font=UI["ui"], anchor="w").pack(anchor="w", pady=2)
-                RoundedButton(body, text="Re-diagnosticar", command=_render,
+                tk.Button(body, text="Re-diagnosticar", command=_render,
                               bg=UI["accent"], fg="#FFFFFF", font=UI["ui_b"],
                               padx=14, pady=6).pack(pady=(16, 4))
 
@@ -2515,7 +2452,7 @@ def gui_main(pdf_path=None, tipo=None):
 
             fila3 = tk.Frame(f_pin, bg=UI["surface"])
             fila3.pack(fill="x", padx=12, pady=(0, 10))
-            RoundedButton(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
+            tk.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
                           bg=UI["accent"], fg="#FFFFFF", font=UI["ui"],
                           padx=12, pady=4).pack(side="left")
             tk.Button(fila3, text="Olvidar PIN guardado", command=self._olvidar_pin,
@@ -2544,7 +2481,7 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="left")
-            RoundedButton(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
+            tk.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
                           bg=UI["accent"], fg="#FFFFFF", font=UI["ui"],
                           padx=10, pady=4).pack(side="right")
             self._cfg_certs_data = []
@@ -2590,7 +2527,7 @@ def gui_main(pdf_path=None, tipo=None):
                           command=lambda _v: self._cfg_render_firma()).config(
                 bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
             fila_pos.winfo_children()[-1].pack(side="left", padx=(6, 0))
-            RoundedButton(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
+            tk.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
                           bg=UI["accent"], fg="#FFFFFF", font=UI["ui"],
                           padx=10, pady=4).pack(side="right")
 
@@ -2624,7 +2561,7 @@ def gui_main(pdf_path=None, tipo=None):
                            font=UI["ui"], activebackground=UI["surface"],
                            command=self._cfg_guardar_tsl).pack(anchor="w", padx=12, pady=10)
 
-            RoundedButton(body, text="Cerrar", command=win.destroy, bg=UI["accent"],
+            tk.Button(body, text="Cerrar", command=win.destroy, bg=UI["accent"],
                           fg="#FFFFFF", font=UI["ui"], padx=14, pady=4).pack(pady=(4, 0))
 
             # cargar apariencia al final (ya existen cfg_pos_lbl y cfg_img_lbl)
@@ -2911,7 +2848,7 @@ def gui_main(pdf_path=None, tipo=None):
             self.pdf_path = p
             self.pagina = 1
             self.lbl_archivo.config(text=os.path.basename(p))
-            self.btn_firmar.set_state("normal")
+            self.btn_firmar.config(state="normal")
             self._cargar_pos_guardada()
             self.render_pagina()
 
@@ -3054,7 +2991,7 @@ def gui_main(pdf_path=None, tipo=None):
         def firmar(self):
             tipo = self.tipo.get()
             pos = self.pos_pt
-            self.btn_firmar.set_state("disabled")
+            self.btn_firmar.config(state="disabled")
             self.lbl_status.config(text="Firmando (vía daemon, token USB)...", fg=UI["muted"])
             self.root.update_idletasks()
             try:
@@ -3071,7 +3008,7 @@ def gui_main(pdf_path=None, tipo=None):
                 else:
                     messagebox.showerror("Error al firmar", str(e))
             finally:
-                self.btn_firmar.set_state("normal")
+                self.btn_firmar.config(state="normal")
 
     root = tk.Tk()
     root.title("SGD-SIGNER — Firma digital")
