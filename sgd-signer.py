@@ -507,7 +507,12 @@ def _registrar_esquema():
             subprocess.run(["xdg-mime", "default", "sgd-signer.desktop",
                             "x-scheme-handler/tramitedoc"], timeout=10)
             return ("Protocolo tramitedoc://", True, "registrado (Linux)")
-        # macOS: bundle .app
+        # macOS: bundle .app con handler Swift nativo.
+        # Un launcher bash NO puede recibir el AppleEvent kAEGetURL que macOS
+        # envía al lanzar un esquema de URL (por eso "abre para firmar" en vez
+        # de conectar el portal). Compilamos un binario Swift que captura el
+        # evento y reenvía la URL al script. Si no hay swiftc (CLT), caemos al
+        # launcher bash (abre la GUI, pero no captura URL).
         app = Path.home() / "Applications" / "SGD-Signer.app"
         (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
         (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
@@ -526,10 +531,52 @@ def _registrar_esquema():
             '<key>CFBundleURLSchemes</key><array><string>tramitedoc</string></array>\n'
             '</dict></array>\n</dict></plist>\n')
         launcher = app / "Contents" / "MacOS" / "launcher"
-        launcher.write_text(
-            f"#!/usr/bin/env bash\nexec {sys.executable} "
-            f"{os.path.abspath(__file__)} \"$@\"\n")
-        launcher.chmod(0o755)
+        py = sys.executable
+        script = os.path.abspath(__file__)
+        swift_src = (
+            'import Cocoa\n'
+            f'let PY = "{py}"\n'
+            f'let SCRIPT = "{script}"\n'
+            'func launch(_ url: String?) {\n'
+            '    let t = Process()\n'
+            '    t.executableURL = URL(fileURLWithPath: PY)\n'
+            '    t.arguments = url.map { [SCRIPT, $0] } ?? [SCRIPT]\n'
+            '    try? t.run()\n'
+            '}\n'
+            'final class Delegate: NSObject, NSApplicationDelegate {\n'
+            '    var gotURL = false\n'
+            '    func applicationDidFinishLaunching(_ n: Notification) {\n'
+            '        NSAppleEventManager.shared().setEventHandler(self,\n'
+            '            andSelector: #selector(handleGetURL(_:withReplyEvent:)),\n'
+            '            forEventClass: AEEventClass(kInternetEventClass),\n'
+            '            andEventID: AEEventID(kAEGetURL))\n'
+            '        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {\n'
+            '            if !self.gotURL { launch(nil) }\n'
+            '        }\n'
+            '    }\n'
+            '    @objc func handleGetURL(_ ev: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {\n'
+            '        gotURL = true\n'
+            '        if let u = ev.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue {\n'
+            '            launch(u)\n'
+            '        }\n'
+            '    }\n'
+            '    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }\n'
+            '}\n'
+            'let app = NSApplication.shared\n'
+            'let d = Delegate()\n'
+            'app.delegate = d\n'
+            'app.run()\n'
+        )
+        swift_file = app / "Contents" / "MacOS" / "handler.swift"
+        swift_file.write_text(swift_src)
+        try:
+            subprocess.run(["swiftc", "-O", str(swift_file), "-o", str(launcher)],
+                           timeout=120, check=True)
+        except Exception:
+            # fallback: launcher bash (abre GUI, no captura URL)
+            launcher.write_text(
+                f"#!/usr/bin/env bash\nexec {py} {script} \"$@\"\n")
+            launcher.chmod(0o755)
         subprocess.run([
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
             "LaunchServices.framework/Support/lsregister", "-f", str(app)],
