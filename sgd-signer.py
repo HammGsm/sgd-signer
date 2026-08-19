@@ -2144,6 +2144,9 @@ def gui_main(pdf_path=None, tipo=None):
                              highlightthickness=0, bd=0)
             self._text = text
             self._w, self._h = w, h
+            # mantener el objeto vivo: RoundedButton(...).pack() no guarda
+            # referencia y el GC destruiría el Canvas (invalid command name).
+            master._rb_refs = getattr(master, "_rb_refs", []) + [self]
             self._draw()
             self.bind("<Button-1>", self._click)
             self.bind("<Enter>", lambda _e: self._hover(True))
