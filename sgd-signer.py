@@ -343,7 +343,13 @@ def make_signer(cfg, pin):
     anterior agota los slots de login del token y el 2do+ intento revienta
     con UserAlreadyLoggedIn. Root cause fix, no parche por caller.
     """
-    if cfg.get("token"):
+    # Root cause: la señal de "usar token USB" es token_lib (la ruta del
+    # módulo PKCS#11), no un flag separado. ELEGIR_CERT guarda token_lib al
+    # elegir un certificado del token. Antes se dependía de cfg["token"], un
+    # flag que podía quedar sin setear (o ponerse a True falsamente) y que,
+    # de estar ausente, hacía caer aquí a la rama .p12 -> pick_cert() ->
+    # input() en el daemon sin stdin -> EOFError al guardar el PIN.
+    if cfg.get("token_lib") or cfg.get("token"):
         import pkcs11
         from pyhanko.sign.pkcs11 import PKCS11Signer
         lib_path = cfg.get("token_lib", "/usr/lib/bit4id/libbit4xpki.so")
