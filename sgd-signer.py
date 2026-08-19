@@ -47,6 +47,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 CERT_DIR = CONFIG_DIR / "certs"
 LOCK_SOCK = Path(tempfile.gettempdir()) / "sgd-signer.sock"
 IS_WIN = sys.platform == "win32"
+IS_LINUX = sys.platform.startswith("linux")
 TSL_URL = "https://iofe.indecopi.gob.pe/TSL/tsl-pe.xml"
 # texto real del original (config_firmaonpe.xml, MENSAJE_FIRMA_MASIVA)
 MENSAJE_FIRMA_MASIVA = (
@@ -1154,6 +1155,29 @@ def _sock_alive():
     return LOCK_SOCK.exists()
 
 
+def _ensure_daemon():
+    """Arranca el daemon en segundo plano si no está corriendo.
+    En Linux el daemon es un servicio systemd (root, para el token USB) y el
+    socket ya existe. En macOS/Windows no hay systemd: la GUI lanza el daemon
+    ella misma y espera a que el socket aparezca. Idempotente: si ya está vivo,
+    no hace nada.
+    """
+    if _sock_alive():
+        return
+    # binario PyInstaller: sys.executable ES el binario; script: python + .py
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--daemon"]
+    else:
+        cmd = [sys.executable, sys.argv[0], "--daemon"]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    # esperar a que el socket aparezca (máx ~5s)
+    for _ in range(50):
+        if _sock_alive():
+            return
+        time.sleep(0.1)
+
+
 def forward_to_daemon(url):
     """Si ya hay un daemon corriendo, le pasa la URL y sale."""
     if not _sock_alive():
@@ -1173,10 +1197,12 @@ def forward_to_daemon(url):
 def call_daemon_op(op_payload, timeout=60):
     """Cliente genérico del protocolo OP: — la GUI (usuario hruiz) no ve el token/PIN
     real, solo el daemon root; todo pasa por este socket."""
+    _ensure_daemon()
     if not _sock_alive():
         raise RuntimeError(
-            f"El daemon sgd-signer no está corriendo ({LOCK_SOCK} no existe). "
-            "Verifica: systemctl status sgd-signer"
+            f"El daemon sgd-signer no pudo arrancar ({LOCK_SOCK} no existe). "
+            + ("Verifica: systemctl status sgd-signer" if IS_LINUX else
+               "Reinicia la aplicación.")
         )
     fam, addr = _sock_addr()
     s = socket.socket(fam, socket.SOCK_STREAM)
@@ -2470,7 +2496,8 @@ def main():
         return cmd_sign(args)
     if args.cmd == "gui":
         return gui_main(args.pdf, tipo=args.tipo)
-    ap.print_help()
+    # sin subcomando (doble clic / ejecutar directo) → abrir la GUI
+    return gui_main(None)
 
 
 if __name__ == "__main__":
