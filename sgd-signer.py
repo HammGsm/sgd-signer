@@ -460,6 +460,15 @@ def diagnostico():
         "accion": None if deps else "deps",
     })
 
+    # 6. servicio de autoarranque del daemon (systemd / LaunchAgent)
+    svc = _servicio_instalado()
+    out.append({
+        "item": "Servicio daemon (autoarranque)",
+        "ok": svc,
+        "detalle": "instalado" if svc else "no instalado",
+        "accion": None if svc else "servicio",
+    })
+
     return out
 
 
@@ -481,6 +490,8 @@ def auto_instalar(acciones):
             resultados.append(_registrar_esquema())
         elif accion == "deps":
             resultados.append(_instalar_deps())
+        elif accion == "servicio":
+            resultados.append(_instalar_servicio())
         elif accion == "middleware":
             resultados.append(("Middleware Bit4id", False,
                                "requiere sudo: ver instrucciones"))
@@ -545,6 +556,7 @@ def _registrar_esquema():
             '<key>CFBundleVersion</key><string>1.0</string>\n'
             '<key>CFBundleExecutable</key><string>launcher</string>\n'
             '<key>CFBundlePackageType</key><string>APPL</string>\n'
+            '<key>LSUIElement</key><true/>\n'
             '<key>CFBundleURLTypes</key><array><dict>\n'
             '<key>CFBundleURLName</key><string>Tramitedoc</string>\n'
             '<key>CFBundleURLSchemes</key><array><string>tramitedoc</string></array>\n'
@@ -580,6 +592,9 @@ def _registrar_esquema():
             'let app = NSApplication.shared\n'
             'let d = Delegate()\n'
             'app.delegate = d\n'
+            '// LSUIElement + accessory: el handler no debe aparecer en el dock\n'
+            '// ni robar foco (es un puente invisible para tramitedoc://).\n'
+            'app.setActivationPolicy(.accessory)\n'
             '// Registrar el handler ANTES de app.run(): el evento kAEGetURL del\n'
             '// navegador llega al arrancar y applicationDidFinishLaunching es\n'
             '// demasiado tarde (root cause de "abre la GUI en vez de conectar").\n'
@@ -607,6 +622,75 @@ def _registrar_esquema():
         return ("Protocolo tramitedoc://", True, "registrado (macOS)")
     except Exception as e:
         return ("Protocolo tramitedoc://", False, str(e))
+
+
+def _servicio_instalado():
+    """True si el daemon está instalado como servicio de autoarranque del SO."""
+    if IS_LINUX:
+        return (Path("/etc/systemd/system/sgd-signer.service").exists()
+                or Path.home() / ".config/systemd/user/sgd-signer.service").exists()
+    if IS_MAC:
+        return (Path.home() / "Library/LaunchAgents/pe.senamhi.sgd-signer.plist").exists()
+    return True  # Windows: el daemon se lanza con la GUI, no hay servicio
+
+
+def _instalar_servicio():
+    """Instala el daemon como servicio del SO desde la propia app (sin install.sh).
+
+    Linux: unit systemd (root, para el token USB) -> requiere sudo.
+    macOS: LaunchAgent del usuario (sin sudo, el daemon corre como el usuario).
+    """
+    try:
+        if IS_LINUX:
+            unit = (
+                "[Unit]\nDescription=sgd-signer daemon (Tramitedoc SGD SENAMHI)\n"
+                "After=pcscd.service network-online.target\nWants=pcscd.service\n\n"
+                "[Service]\nType=simple\n"
+                f"ExecStart={sys.executable} {os.path.abspath(__file__)} --daemon\n"
+                "Restart=always\nRestartSec=3\n"
+                f"Environment=HOME={Path.home()}\n"
+                "KillMode=process\n\n"
+                "[Install]\nWantedBy=multi-user.target\n"
+            )
+            tmp = Path(tempfile.gettempdir()) / "sgd-signer.service"
+            tmp.write_text(unit)
+            # sudo -n: si no hay sudo sin password, reportamos el comando manual
+            r = subprocess.run(["sudo", "-n", "cp", str(tmp),
+                                "/etc/systemd/system/sgd-signer.service"],
+                               timeout=15)
+            if r.returncode != 0:
+                return ("Servicio daemon (systemd)", False,
+                        "requiere sudo: 'sudo cp %s /etc/systemd/system/ && "
+                        "sudo systemctl enable --now sgd-signer'" % tmp)
+            subprocess.run(["sudo", "-n", "systemctl", "daemon-reload"], timeout=15)
+            subprocess.run(["sudo", "-n", "systemctl", "enable", "--now",
+                            "sgd-signer"], timeout=30)
+            return ("Servicio daemon (systemd)", True, "instalado y activo")
+        if IS_MAC:
+            plist = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                '<plist version="1.0"><dict>\n'
+                '<key>Label</key><string>pe.senamhi.sgd-signer</string>\n'
+                '<key>ProgramArguments</key><array>\n'
+                f'<string>{sys.executable}</string>\n'
+                f'<string>{os.path.abspath(__file__)}</string>\n'
+                '<string>--daemon</string>\n'
+                '</array>\n'
+                '<key>RunAtLoad</key><true/>\n'
+                '<key>KeepAlive</key><true/>\n'
+                '</dict></plist>\n'
+            )
+            agent = Path.home() / "Library/LaunchAgents/pe.senamhi.sgd-signer.plist"
+            agent.parent.mkdir(parents=True, exist_ok=True)
+            agent.write_text(plist)
+            subprocess.run(["launchctl", "unload", str(agent)], timeout=10)
+            subprocess.run(["launchctl", "load", str(agent)], timeout=10)
+            return ("Servicio daemon (LaunchAgent)", True, "instalado y activo")
+        return ("Servicio daemon", True, "no aplica (Windows)")
+    except Exception as e:
+        return ("Servicio daemon", False, str(e))
 
 
 def _instalar_deps():
@@ -2843,10 +2927,11 @@ def gui_main(pdf_path=None, tipo=None):
 
     root = tk.Tk()
     root.title("SGD-SIGNER — Firma digital")
-    # macOS: la pantalla útil (menos menubar+dock) es menor que 920px; limitar
-    # la altura para que los controles inferiores (Firmar) queden visibles.
-    h = min(920, root.winfo_screenheight() - 100)
-    root.geometry(f"760x{h}")
+    # Responsive: el layout usa pack con expand=True en el visor, así que la
+    # ventana se adapta al redimensionar. Solo fijamos un tamaño inicial
+    # razonable; el visor absorbe el espacio sobrante y las barras (PIN,
+    # archivo, navegación, firmar) quedan siempre visibles.
+    root.geometry("760x760")
     root.minsize(560, 480)
     root.configure(bg=UI["bg"])
     # icono de la ventana (assets/icon.png); si no existe, se omite sin romper
