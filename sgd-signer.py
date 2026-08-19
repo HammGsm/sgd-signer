@@ -48,6 +48,7 @@ CERT_DIR = CONFIG_DIR / "certs"
 LOCK_SOCK = Path(tempfile.gettempdir()) / "sgd-signer.sock"
 IS_WIN = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
+IS_MAC = sys.platform == "darwin"
 TSL_URL = "https://iofe.indecopi.gob.pe/TSL/tsl-pe.xml"
 # texto real del original (config_firmaonpe.xml, MENSAJE_FIRMA_MASIVA)
 MENSAJE_FIRMA_MASIVA = (
@@ -1209,6 +1210,10 @@ def _entorno_grafico_usuario(usuario="hruiz"):
     En Windows no aplica (el daemon corre como el mismo usuario): devuelve {}."""
     if IS_WIN:
         return {}
+    if IS_MAC:
+        # el daemon corre como el mismo usuario en la sesión gráfica; no hay
+        # DISPLAY/DBUS que heredar (macOS usa WindowServer, no X11).
+        return {}
     try:
         pid = subprocess.check_output(
             ["pgrep", "-u", usuario, "-n", "gnome-shell"], text=True
@@ -1252,6 +1257,8 @@ def _ejecutar_dialogo(script, marca, usuario, timeout):
     env = dict(os.environ)
     env.update(env_gui)
     if IS_WIN:
+        cmd = [sys.executable, "-c", script]
+    elif IS_MAC:
         cmd = [sys.executable, "-c", script]
     else:
         cmd = ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3", "-c", script]
@@ -1323,6 +1330,10 @@ def lanzar_gui_usuario(pdf_path, tipo, usuario="hruiz"):
     env.update(env_gui)
     script = Path(__file__).resolve()
     if IS_WIN:
+        cmd = [sys.executable, str(script), "gui", pdf_path, "--tipo", tipo]
+    elif IS_MAC:
+        # el daemon corre como el mismo usuario en la sesión gráfica; lanza la
+        # GUI directo con el python del venv (sin runuser, que no existe en macOS).
         cmd = [sys.executable, str(script), "gui", pdf_path, "--tipo", tipo]
     else:
         cmd = ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3",
