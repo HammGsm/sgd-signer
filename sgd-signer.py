@@ -1799,8 +1799,15 @@ def daemon_loop(url):
 
     ctx["session_pin"] = None  # PIN "recordado en esta sesión" — solo en memoria, muere con el daemon
 
-    if not IS_WIN and LOCK_SOCK.exists():
-        LOCK_SOCK.unlink()
+    if not IS_WIN:
+        # instancia única: si ya hay un daemon vivo escuchando en el socket,
+        # NO lo borramos ni nos enlazamos (un segundo daemon huérfano compite
+        # por el socket y cuelga la firma). Solo se borra un socket muerto.
+        if _sock_alive():
+            log("Ya hay un daemon sgd-signer activo; saliendo (instancia única)")
+            return
+        if LOCK_SOCK.exists():
+            LOCK_SOCK.unlink()
     fam, addr = _sock_addr()
     srv = socket.socket(fam, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
