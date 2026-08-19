@@ -97,8 +97,26 @@ def parse_nombre_doc(rutaDoc):
     }
 
 
+def _log_dir():
+    """Carpeta de logs según la convención de cada SO."""
+    if IS_WIN:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        return Path(base) / "sgd-signer" / "logs"
+    if IS_MAC:
+        return Path.home() / "Library" / "Logs" / "sgd-signer"
+    return Path.home() / ".sgd-signer" / "logs"
+
+
 def log(msg):
-    print(f"[sgd-signer] {msg}", flush=True)
+    line = f"[sgd-signer] {msg}"
+    print(line, flush=True)
+    try:
+        d = _log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "sgd-signer.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except Exception:
+        pass
 
 
 def load_config():
@@ -1481,8 +1499,12 @@ def _ensure_daemon():
         cmd = [sys.executable, "--daemon"]
     else:
         cmd = [sys.executable, os.path.abspath(__file__), "--daemon"]
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
+    kw = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+              start_new_session=True)
+    if IS_WIN:
+        # sin CREATE_NO_WINDOW, Windows abre una consola visible para el daemon
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.Popen(cmd, **kw)
     # esperar a que el socket aparezca (máx ~6s). El check hace un connect de
     # hasta 1s si el socket existe pero aún no escucha; con sleep corto no
     # bloquea demasiado.
@@ -1832,7 +1854,7 @@ def daemon_loop(url):
             try:
                 req = json.loads(data[len(b"OP:"):].decode())
                 resp = dispatch_gui_op(req, ctx)
-            except Exception as e:
+            except BaseException as e:
                 import traceback
                 log(f"ERROR en OP {data[:60]!r}: {traceback.format_exc()}")
                 resp = {"ok": False, "error": f"{type(e).__name__}: {e}" or type(e).__name__}
@@ -2821,7 +2843,11 @@ def gui_main(pdf_path=None, tipo=None):
 
     root = tk.Tk()
     root.title("SGD-SIGNER — Firma digital")
-    root.geometry("760x920")
+    # macOS: la pantalla útil (menos menubar+dock) es menor que 920px; limitar
+    # la altura para que los controles inferiores (Firmar) queden visibles.
+    h = min(920, root.winfo_screenheight() - 100)
+    root.geometry(f"760x{h}")
+    root.minsize(560, 480)
     root.configure(bg=UI["bg"])
     # icono de la ventana (assets/icon.png); si no existe, se omite sin romper
     try:
