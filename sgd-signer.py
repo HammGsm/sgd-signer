@@ -1402,10 +1402,15 @@ def dispatch_gui_op(req, ctx):
 
     if op == "LISTAR_CERTS":
         # sólo el daemon ve el token; la GUI (usuario) pide por socket.
-        # Sin PIN listamos los tokens como "requiere PIN" (listar_certificados
-        # acepta pin=None); NO llamamos get_pin aquí porque lanzaría una
-        # excepción y la Configuración no podría detectar los tokens.
+        # Si hay PIN guardado (disco/sesión) se usa para leer los certificados
+        # reales del token y mostrarlos como "Listo para firmar". Si no hay PIN,
+        # se listan los tokens como "requiere PIN" (sin fallar).
         pin = req.get("pin")
+        if not pin:
+            try:
+                pin = get_pin(cfg, ctx)  # PIN guardado en disco/sesión
+            except RuntimeError:
+                pin = None  # sin PIN: listar tokens como "requiere PIN"
         try:
             certs = listar_certificados(pin)
         except Exception as e:
