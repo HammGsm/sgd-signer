@@ -1,0 +1,102 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            nombre: linux-x64
+          - os: windows-latest
+            nombre: windows-x64
+          - os: macos-13
+            nombre: macos-x64
+          - os: macos-14
+            nombre: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Linux se compila dentro de Rocky 9 (glibc 2.34) para que el binario
+      # corra en RHEL/Oracle Linux 9; ubuntu-22.04 trae glibc 2.35 y falla ahí.
+      - name: Compilar en Rocky 9 (Linux)
+        if: matrix.nombre == 'linux-x64'
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rockylinux:9 bash -euxc '
+            dnf install -y -q python3.11 python3.11-pip python3.11-tkinter binutils >/dev/null
+            python3.11 -m pip install -q --upgrade pip
+            python3.11 -m pip install -q -r requirements.txt pyinstaller
+            python3.11 -m PyInstaller --onefile --name sgd-signer \
+              --add-data "/src/assets:assets" \
+              --hidden-import pkcs11 --hidden-import pymupdf \
+              --collect-submodules pyhanko --collect-submodules pyhanko_certvalidator \
+              sgd-signer.py
+            chown -R $(stat -c "%u:%g" /src) dist build
+          '
+
+      - name: Instalar dependencias
+        if: matrix.nombre != 'linux-x64'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Compilar
+        if: matrix.nombre != 'linux-x64'
+        run: >
+          pyinstaller --onefile --name sgd-signer
+          --add-data "${{ github.workspace }}/assets${{ runner.os == 'Windows' && ';' || ':' }}assets"
+          --hidden-import pkcs11 --hidden-import pymupdf
+          --collect-submodules pyhanko --collect-submodules pyhanko_certvalidator
+          sgd-signer.py
+
+      - name: Verificar que el binario arranca
+        shell: bash
+        run: |
+          BIN=dist/sgd-signer
+          [ "${{ runner.os }}" = "Windows" ] && BIN=dist/sgd-signer.exe
+          "$BIN" --help
+
+      - name: Empaquetar
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a ../sgd-signer-${{ matrix.nombre }}.zip sgd-signer.exe
+          else
+            tar czf ../sgd-signer-${{ matrix.nombre }}.tar.gz sgd-signer
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sgd-signer-${{ matrix.nombre }}
+          path: |
+            sgd-signer-*.tar.gz
+            sgd-signer-*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sgd-signer-*.tar.gz
+            sgd-signer-*.zip
+          generate_release_notes: true

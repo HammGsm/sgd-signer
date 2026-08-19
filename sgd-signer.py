@@ -410,30 +410,13 @@ def make_signer(cfg, pin):
     return signers.SimpleSigner.load(cert_path, passphrase=pin.encode())
 
 
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+# en binario PyInstaller los assets viven en sys._MEIPASS, no junto al .py
+ASSETS_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 # imagen de firma real (extraída del MSI original) por tipo; 6→imagenFirma6.jpg, resto→imagenFirma<N>.jpg
 IMG_POR_TIPO = {t: ASSETS_DIR / f"imagenFirma{t}.jpg" for t in TIPOS}
 
 
 FIRMA_W, FIRMA_H = 190, 60  # recuadro de firma manual (pt) — 5 líneas a leading 6 + imagen
-
-
-def _imagen_firma_nitida(path):
-    """Imagen de firma lista para estampar: fondo blanco -> transparente, trazo realzado.
-
-    El JPEG original trae el trazo en gris claro sobre fondo blanco; escalado dentro
-    del recuadro se veía lavado ("degradado") y además tapaba el documento con un
-    bloque blanco. Se quita el fondo y se lleva el trazo a negro pleno.
-    """
-    from PIL import Image as PILImage
-    im = PILImage.open(path).convert("RGB")
-    gris = im.convert("L")
-    # alfa: 0 donde es fondo (claro), 255 donde hay trazo (oscuro)
-    alfa = gris.point(lambda v: 0 if v >= 235 else 255)
-    # trazo a negro pleno (contraste alto), el fondo ya no se ve
-    trazo = gris.point(lambda v: max(0, int(v * 0.45)))
-    out = PILImage.merge("RGBA", (trazo, trazo, trazo, alfa))
-    return out
 
 
 def firma_box(tipo, W, H, pos=None, ms=0):
@@ -547,7 +530,9 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     img_path = Path(apariencia_tipo["imagen"]) if apariencia_tipo.get("imagen") else IMG_POR_TIPO.get(tipo)
     background = None
     if img_path and img_path.exists():
-        background = PdfImage(_imagen_firma_nitida(img_path))
+        # la imagen se estampa TAL CUAL, sin alterar color ni calidad: debe salir
+        # idéntica a la vista previa (que la abre directo con PIL).
+        background = PdfImage(PILImage.open(img_path))
 
     # posición de la imagen DENTRO del stamp (configurable por tipo): el usuario
     # elige dónde va la imagen respecto al texto. Default = derecha/abajo (como el
@@ -1530,18 +1515,70 @@ def cmd_certs(args):
 
 
 # --- GUI manual — visor PDF + firmar archivo local -------------------------
+def _tiene_poppler():
+    """poppler-utils está en Linux, pero no en Windows/macOS empaquetados."""
+    return shutil.which("pdftoppm") is not None and shutil.which("pdfinfo") is not None
+
+
 def _pdf_page_size_pt(pdf_path, pagina):
-    """Tamaño de página en puntos vía pdfinfo (poppler-utils, ya instalado)."""
-    out = subprocess.run(
-        ["pdfinfo", "-f", str(pagina), "-l", str(pagina), pdf_path],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    for line in out.splitlines():
-        if line.startswith("Page") and "size" in line:
-            # "Page    1 size: 595.32 x 841.92 pts"
-            parts = line.split(":")[1].split("x")
-            return float(parts[0]), float(parts[1].split("pts")[0])
-    raise RuntimeError(f"no se pudo leer tamaño de página de {pdf_path}")
+    """Tamaño de página en puntos. poppler si está, si no PyMuPDF (Win/macOS)."""
+    if _tiene_poppler():
+        out = subprocess.run(
+            ["pdfinfo", "-f", str(pagina), "-l", str(pagina), pdf_path],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        for line in out.splitlines():
+            if line.startswith("Page") and "size" in line:
+                # "Page    1 size: 595.32 x 841.92 pts"
+                parts = line.split(":")[1].split("x")
+                return float(parts[0]), float(parts[1].split("pts")[0])
+    import pymupdf as fitz  # PyMuPDF
+    with fitz.open(pdf_path) as doc:
+        r = doc[pagina - 1].rect
+        return float(r.width), float(r.height)
+
+
+def _pdf_num_paginas(pdf_path):
+    """Número de páginas. poppler si está, si no PyMuPDF."""
+    if _tiene_poppler():
+        try:
+            out = subprocess.run(["pdfinfo", pdf_path], capture_output=True,
+                                 text=True, check=True).stdout
+            for line in out.splitlines():
+                if line.startswith("Pages:"):
+                    return int(line.split(":")[1].strip())
+        except Exception:
+            pass
+    try:
+        import pymupdf as fitz
+        with fitz.open(pdf_path) as doc:
+            return doc.page_count
+    except Exception:
+        return 1
+
+
+def _render_pdf_png(pdf_path, pagina, dpi):
+    """Renderiza una página a PNG y devuelve la ruta. poppler o PyMuPDF."""
+    tmp = tempfile.mktemp(prefix="sgd-signer-preview-")
+    if _tiene_poppler():
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", str(dpi), "-f", str(pagina), "-l", str(pagina),
+             pdf_path, tmp],
+            check=True,
+        )
+        for cand in (f"{tmp}-{pagina}.png", f"{tmp}-1.png",
+                     f"{tmp}-{pagina:02d}.png", f"{tmp}-{pagina:03d}.png"):
+            if os.path.exists(cand):
+                return cand
+        hits = list(Path(tempfile.gettempdir()).glob(os.path.basename(tmp) + "*.png"))
+        if hits:
+            return str(hits[0])
+        raise RuntimeError("pdftoppm no generó la vista previa")
+    import pymupdf as fitz  # PyMuPDF: Windows/macOS sin poppler
+    png = tmp + ".png"
+    with fitz.open(pdf_path) as doc:
+        doc[pagina - 1].get_pixmap(dpi=dpi).save(png)
+    return png
 
 
 # --- paleta warm monochrome (minimalist-ui) ---------------------------------
@@ -2209,11 +2246,7 @@ def gui_main(pdf_path=None, tipo=None):
 
         def cargar(self, p):
             try:
-                out = subprocess.run(["pdfinfo", p], capture_output=True, text=True, check=True).stdout
-                self.n_paginas = 1
-                for line in out.splitlines():
-                    if line.startswith("Pages:"):
-                        self.n_paginas = int(line.split(":")[1].strip())
+                self.n_paginas = _pdf_num_paginas(p)
             except Exception as e:
                 messagebox.showerror("Error", f"No se pudo leer el PDF: {e}")
                 return
@@ -2253,18 +2286,7 @@ def gui_main(pdf_path=None, tipo=None):
             if self.zoom_modo in ("ajustar", "ancho"):
                 self.zoom = self._zoom_calculado(self.zoom_modo)
             dpi = max(20, min(400, int(72 * self.zoom)))
-            tmp = tempfile.mktemp(prefix="sgd-signer-preview-")
-            subprocess.run(
-                ["pdftoppm", "-png", "-r", str(dpi), "-f", str(self.pagina), "-l", str(self.pagina),
-                 self.pdf_path, tmp],
-                check=True,
-            )
-            png_path = tmp + f"-{self.pagina}.png" if self.n_paginas > 1 else tmp + "-1.png"
-            if not os.path.exists(png_path):
-                cand = [f for f in Path(tempfile.gettempdir()).glob(os.path.basename(tmp) + "*.png")]
-                if not cand:
-                    raise RuntimeError("pdftoppm no generó la vista previa")
-                png_path = str(cand[0])
+            png_path = _render_pdf_png(self.pdf_path, self.pagina, dpi)
             img = Image.open(png_path)
             self.scale = img.width / self.page_w_pt
             self.tk_img = ImageTk.PhotoImage(img)
