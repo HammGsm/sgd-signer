@@ -18,11 +18,10 @@ jobs:
             nombre: linux-x64
           - os: windows-latest
             nombre: windows-x64
-          # macOS Intel necesita runner Intel nativo (macos-13): setup-python
-          # ignora `architecture` en macOS, así que macos-14 (arm64) produce un
-          # binario arm64 aunque se pida x64. macos-13 tarda en cola pero es el
-          # único que da un binario x86_64 real.
-          - os: macos-13
+          # macOS Intel: label dedicado macos-15-intel (macOS 15, chip x86_64).
+          # macos-13 está en deprecación; macos-15-intel es su reemplazo y el
+          # último runner x86_64 (disponible hasta agosto 2027).
+          - os: macos-15-intel
             nombre: macos-x64
           - os: macos-14
             nombre: macos-arm64
