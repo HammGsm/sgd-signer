@@ -2164,16 +2164,16 @@ def gui_main(pdf_path=None, tipo=None):
             self.pin_pill.pack(side="left", pady=8)
             tb.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
                        bootstyle="primary").pack(side="right", padx=10, pady=6)
-            tb.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
+            tb.Button(pin_bar, text="⚙ Configuración", command=self.abrir_configuracion,
                       bootstyle="light").pack(side="right", padx=6, pady=6)
-            tb.Button(pin_bar, text="Doctor", command=self.abrir_doctor,
+            tb.Button(pin_bar, text="✓ Doctor", command=self.abrir_doctor,
                       bootstyle="light").pack(side="right", padx=6, pady=6)
             self._refrescar_estado_pin()
 
             # --- barra archivo/tipo ------------------------------------------
             top = tk.Frame(root, bg=UI["bg"])
             top.pack(fill="x", padx=12, pady=(0, 6))
-            tb.Button(top, text="Abrir PDF", command=self.abrir,
+            tb.Button(top, text="📂 Abrir PDF", command=self.abrir,
                       bootstyle="primary").pack(side="left")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
                                         fg=UI["muted"], font=UI["ui"])
@@ -2194,11 +2194,11 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra navegación/posición -----------------------------------
             nav = tk.Frame(root, bg=UI["bg"])
             nav.pack(fill="x", padx=12, pady=(0, 6))
-            tb.Button(nav, text="‹ Pág", command=lambda: self.cambiar_pagina(-1),
+            tb.Button(nav, text="◀ Pág", command=lambda: self.cambiar_pagina(-1),
                       bootstyle="light").pack(side="left")
             self.lbl_pagina = tk.Label(nav, text="- / -", bg=UI["bg"], fg=UI["ink"], font=UI["mono"])
             self.lbl_pagina.pack(side="left", padx=8)
-            tb.Button(nav, text="Pág ›", command=lambda: self.cambiar_pagina(1),
+            tb.Button(nav, text="Pág ▶", command=lambda: self.cambiar_pagina(1),
                       bootstyle="light").pack(side="left")
             self.lbl_pos = tk.Label(nav, text="Click en la página para fijar posición (se recuerda por tipo)",
                                      bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
@@ -2248,10 +2248,10 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
+            self.btn_firmar = tb.Button(bottom, text="✍ Firmar", command=self.firmar,
                                          state="disabled", bootstyle="primary")
             self.btn_firmar.pack(side="left")
-            tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
+            tb.Button(bottom, text="⧉ Firma masiva…", command=self.firma_masiva,
                       bootstyle="light").pack(side="left", padx=(8, 0))
             self.lbl_status = tk.Label(bottom, text="", bg=UI["bg"], fg=UI["muted"], font=UI["mono"])
             self.lbl_status.pack(side="left", padx=10)
