@@ -1154,7 +1154,23 @@ def _sock_alive():
             return True
         except Exception:
             return False
-    return LOCK_SOCK.exists()
+    # Unix: no basta con que el archivo exista — puede ser un socket huérfano
+    # de un daemon que ya murió. Probamos la conexión real.
+    if not LOCK_SOCK.exists():
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(str(LOCK_SOCK))
+        s.close()
+        return True
+    except Exception:
+        # socket muerto: limpiarlo para que _ensure_daemon lo relance
+        try:
+            LOCK_SOCK.unlink()
+        except Exception:
+            pass
+        return False
 
 
 def _ensure_daemon():
