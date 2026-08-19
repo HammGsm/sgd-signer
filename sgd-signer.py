@@ -2146,11 +2146,10 @@ def gui_main(pdf_path=None, tipo=None):
             self._last_canvas_w = self._last_canvas_h = 0
 
             root.configure(bg=UI["bg"])
+            # NO llamar style.theme_use("clam"): anula el tema ttkbootstrap
+            # (litera) y rompe la coherencia visual de la ventana principal.
+            # La configuración no lo llama y por eso se ve bien.
             style = ttk.Style()
-            try:
-                style.theme_use("clam")
-            except Exception:
-                pass
             style.configure("TFrame", background=UI["bg"])
 
             # --- barra PIN (arriba de todo: siempre visible el estado) ------
