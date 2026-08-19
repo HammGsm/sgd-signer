@@ -2051,11 +2051,15 @@ def _render_pdf_png(pdf_path, pagina, dpi):
 
 # --- paleta warm monochrome (minimalist-ui) ---------------------------------
 UI = {
-    "bg": "#FBFBFA", "surface": "#FFFFFF", "border": "#EAEAEA",
-    "ink": "#111111", "muted": "#787774",
-    "accent_bg": "#EDF3EC", "accent_fg": "#346538",   # pale green: éxito / guardado
-    "warn_bg": "#FBF3DB", "warn_fg": "#956400",       # pale yellow: aviso / sin PIN
-    "danger_bg": "#FDEBEC", "danger_fg": "#9F2F2D",   # pale red: error
+    # macOS 26 "Liquid Glass" — paleta Apple, translúcida y luminosa.
+    # Tkinter no tiene blur/glass real, así que se simula con superficies
+    # claras, bordes suaves y acento azul Apple. Compatible Linux/Windows.
+    "bg": "#F5F5F7", "surface": "#FFFFFF", "border": "#D2D2D7",
+    "ink": "#1D1D1F", "muted": "#86868B",
+    "accent": "#007AFF", "accent_hover": "#0060DF",   # azul Apple (botones primarios)
+    "accent_bg": "#E8F0FE", "accent_fg": "#007AFF",   # azul claro (estado OK)
+    "warn_bg": "#FFF3CD", "warn_fg": "#B25000",       # ámbar (aviso / sin PIN)
+    "danger_bg": "#FFE5E5", "danger_fg": "#D70015",   # rojo Apple (error)
     "mono": ("SF Mono", 9), "mono_b": ("SF Mono", 9, "bold"),
     "ui": ("Helvetica Neue", 10), "ui_b": ("Helvetica Neue", 10, "bold"),
 }
@@ -2149,6 +2153,8 @@ def gui_main(pdf_path=None, tipo=None):
             style.configure("TFrame", background=UI["bg"])
 
             # --- barra PIN (arriba de todo: siempre visible el estado) ------
+            # Liquid Glass: superficie translúcida con borde superior brillante
+            # (luz entrando al material), como las barras de macOS 26.
             pin_bar = tk.Frame(root, bg=UI["surface"], highlightbackground=UI["border"],
                                 highlightthickness=1)
             pin_bar.pack(fill="x", padx=12, pady=(12, 6))
@@ -2157,7 +2163,7 @@ def gui_main(pdf_path=None, tipo=None):
             self.pin_pill = pill(pin_bar, "…", UI["warn_bg"], UI["warn_fg"])
             self.pin_pill.pack(side="left", pady=8)
             tk.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
-                      bg=UI["ink"], fg="#FFFFFF", activebackground="#333333",
+                      bg=UI["accent"], fg="#FFFFFF", activebackground=UI["accent_hover"],
                       relief="flat", font=UI["ui"], padx=10, pady=4,
                       borderwidth=0).pack(side="right", padx=10, pady=6)
             tk.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
@@ -2258,8 +2264,8 @@ def gui_main(pdf_path=None, tipo=None):
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
             self.btn_firmar = tk.Button(bottom, text="Firmar", command=self.firmar,
-                                         state="disabled", bg=UI["ink"], fg="#FFFFFF",
-                                         activebackground="#333333", relief="flat",
+                                         state="disabled", bg=UI["accent"], fg="#FFFFFF",
+                                         activebackground=UI["accent_hover"], relief="flat",
                                          font=UI["ui_b"], padx=14, pady=6, borderwidth=0)
             self.btn_firmar.pack(side="left")
             tk.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
@@ -2358,7 +2364,7 @@ def gui_main(pdf_path=None, tipo=None):
                 if faltan_auto:
                     tk.Button(body, text="Instalar lo que falta",
                               command=lambda: self._instalar_doctor(body, faltan_auto),
-                              bg=UI["ink"], fg="#FFFFFF", relief="flat",
+                              bg=UI["accent"], fg="#FFFFFF", relief="flat",
                               font=UI["ui_b"], padx=12, pady=6).pack(pady=(16, 4))
                 else:
                     tk.Label(body, text="Todo en orden ✓", bg=UI["bg"], fg=UI["accent_fg"],
@@ -2375,7 +2381,7 @@ def gui_main(pdf_path=None, tipo=None):
                     tk.Label(body, text=f"{marca}  {item}: {msg}", bg=UI["bg"],
                              fg=color, font=UI["ui"], anchor="w").pack(anchor="w", pady=2)
                 tk.Button(body, text="Re-diagnosticar", command=_render,
-                          bg=UI["ink"], fg="#FFFFFF", relief="flat",
+                          bg=UI["accent"], fg="#FFFFFF", relief="flat",
                           font=UI["ui_b"], padx=12, pady=6).pack(pady=(16, 4))
 
             _render()
@@ -2449,7 +2455,7 @@ def gui_main(pdf_path=None, tipo=None):
             fila3 = tk.Frame(f_pin, bg=UI["surface"])
             fila3.pack(fill="x", padx=12, pady=(0, 10))
             tk.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
-                      bg=UI["ink"], fg="#FFFFFF", relief="flat", font=UI["ui"],
+                      bg=UI["accent"], fg="#FFFFFF", relief="flat", font=UI["ui"],
                       padx=10, pady=4, borderwidth=0).pack(side="left")
             tk.Button(fila3, text="Olvidar PIN guardado", command=self._olvidar_pin,
                       bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
@@ -2478,7 +2484,7 @@ def gui_main(pdf_path=None, tipo=None):
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="left")
             tk.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
-                      bg=UI["ink"], fg="#FFFFFF", relief="flat", font=UI["ui"],
+                      bg=UI["accent"], fg="#FFFFFF", relief="flat", font=UI["ui"],
                       padx=8, pady=2, borderwidth=0).pack(side="right")
             self._cfg_certs_data = []
 
@@ -2524,7 +2530,7 @@ def gui_main(pdf_path=None, tipo=None):
                 bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
             fila_pos.winfo_children()[-1].pack(side="left", padx=(6, 0))
             tk.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
-                      bg=UI["ink"], fg="#FFFFFF", relief="flat", font=UI["ui"],
+                      bg=UI["accent"], fg="#FFFFFF", relief="flat", font=UI["ui"],
                       padx=8, pady=2, borderwidth=0).pack(side="right")
 
             # vista previa de la firma completa (imagen + texto) como saldrá
@@ -2557,7 +2563,7 @@ def gui_main(pdf_path=None, tipo=None):
                            font=UI["ui"], activebackground=UI["surface"],
                            command=self._cfg_guardar_tsl).pack(anchor="w", padx=12, pady=10)
 
-            tk.Button(body, text="Cerrar", command=win.destroy, bg=UI["ink"], fg="#FFFFFF",
+            tk.Button(body, text="Cerrar", command=win.destroy, bg=UI["accent"], fg="#FFFFFF",
                       relief="flat", font=UI["ui"], padx=12, pady=4, borderwidth=0).pack(pady=(4, 0))
 
             # cargar apariencia al final (ya existen cfg_pos_lbl y cfg_img_lbl)
@@ -2865,11 +2871,11 @@ def gui_main(pdf_path=None, tipo=None):
             cy_bot = (self.page_h_pt - y0) * self.scale + oy
             self.canvas.create_rectangle(
                 cx0, cy_top, cx1, cy_bot,
-                outline="#346538", width=2, dash=(4, 3), tags="preview_firma",
+                outline="#007AFF", width=2, dash=(4, 3), tags="preview_firma",
             )
             self.canvas.create_text(
                 (cx0 + cx1) / 2, (cy_top + cy_bot) / 2,
-                text="FIRMA", fill="#346538", font=UI["mono_b"], tags="preview_firma",
+                text="FIRMA", fill="#007AFF", font=UI["mono_b"], tags="preview_firma",
             )
 
         def render_pagina(self):
