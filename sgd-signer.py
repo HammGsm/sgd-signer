@@ -175,6 +175,8 @@ PKCS11_LIBS_CONOCIDAS = [
     "/usr/lib64/opensc-pkcs11.so",         # OpenSC (DNIe, CNS, genéricas)
     "/usr/lib/x86_64-linux-gnu/opensc-pkcs11.so",
     "/usr/local/lib/libeTPkcs11.so",       # SafeNet
+    "/Library/bit4id/pkcs11/libbit4xpki.dylib",   # Bit4id (macOS)
+    "/Library/bit4id/pkcs11/libbit4opki.dylib",   # Bit4id PKCS#11 opaco (macOS)
     "C:\\Windows\\System32\\bit4xpki.dll",
     "C:\\Windows\\System32\\opensc-pkcs11.dll",
 ]
