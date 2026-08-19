@@ -16,18 +16,16 @@ jobs:
         include:
           - os: ubuntu-22.04
             nombre: linux-x64
-            arch: x64
           - os: windows-latest
             nombre: windows-x64
-            arch: x64
-          # macOS Intel se compila en macos-14 vía Rosetta 2: los runners
-          # macos-13 (Intel nativo) están siendo retirados y quedan en cola.
-          - os: macos-14
+          # macOS Intel necesita runner Intel nativo (macos-13): setup-python
+          # ignora `architecture` en macOS, así que macos-14 (arm64) produce un
+          # binario arm64 aunque se pida x64. macos-13 tarda en cola pero es el
+          # único que da un binario x86_64 real.
+          - os: macos-13
             nombre: macos-x64
-            arch: x64
           - os: macos-14
             nombre: macos-arm64
-            arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +33,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          architecture: ${{ matrix.arch }}
 
       # Linux se compila dentro de Rocky 9 (glibc 2.34) para que el binario
       # corra en RHEL/Oracle Linux 9; ubuntu-22.04 trae glibc 2.35 y falla ahí.
@@ -75,6 +72,16 @@ jobs:
           BIN=dist/sgd-signer
           [ "${{ runner.os }}" = "Windows" ] && BIN=dist/sgd-signer.exe
           "$BIN" --help
+          # la arquitectura debe coincidir con el nombre del artefacto
+          case "${{ matrix.nombre }}" in
+            *-x64)   EXPECT=x86_64 ;;
+            *-arm64) EXPECT=arm64 ;;
+          esac
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            GOT=$(file "$BIN" | grep -oE 'x86_64|arm64' | head -1)
+            [ "$GOT" = "$EXPECT" ] || { echo "ARQUITECTURA INCORRECTA: $GOT != $EXPECT"; exit 1; }
+            echo "arquitectura OK: $GOT"
+          fi
 
       - name: Empaquetar
         shell: bash
