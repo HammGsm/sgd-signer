@@ -348,6 +348,208 @@ def _detectar_token_pkcs11():
     return None
 
 
+# --- diagnóstico y auto-instalación (autocontenido, estilo AnyDesk) ---------
+
+def _middleware_presente():
+    """True si hay al menos un módulo PKCS#11 instalado en el sistema."""
+    return any(Path(p).exists() for p in PKCS11_LIBS_CONOCIDAS)
+
+
+def _esquema_registrado():
+    """True si tramitedoc:// está registrado como handler en este OS."""
+    if IS_WIN:
+        # registro de Windows: HKCU\Software\Classes\tramitedoc
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Classes\tramitedoc") as k:
+                return True
+        except Exception:
+            return False
+    if IS_LINUX:
+        # xdg-mime query default x-scheme-handler/tramitedoc
+        try:
+            r = subprocess.run(
+                ["xdg-mime", "query", "default", "x-scheme-handler/tramitedoc"],
+                capture_output=True, text=True, timeout=5)
+            return bool(r.stdout.strip())
+        except Exception:
+            return False
+    # macOS: bundle .app registrado en LaunchServices
+    app = Path.home() / "Applications" / "SGD-Signer.app"
+    return app.exists()
+
+
+def _deps_presentes():
+    """True si las dependencias Python (pyhanko, pkcs11, websocket-client) están."""
+    for mod in ("pyhanko", "pkcs11", "websocket"):
+        try:
+            __import__(mod)
+        except Exception:
+            return False
+    return True
+
+
+def diagnostico():
+    """Revisa el estado de instalación y devuelve una lista de dicts:
+    {item, ok, detalle, accion}. 'accion' es None si no hay nada que arreglar
+    automáticamente, o una clave que auto_instalar() sabe resolver."""
+    out = []
+
+    # 1. daemon
+    daemon_ok = _sock_alive()
+    out.append({
+        "item": "Daemon",
+        "ok": daemon_ok,
+        "detalle": "corriendo" if daemon_ok else "no está corriendo",
+        "accion": None if daemon_ok else "daemon",
+    })
+
+    # 2. middleware PKCS#11 (driver del token)
+    mw = _middleware_presente()
+    out.append({
+        "item": "Middleware Bit4id (driver PKCS#11)",
+        "ok": mw,
+        "detalle": "instalado" if mw else "no instalado",
+        "accion": None,  # requiere sudo + descarga del fabricante: solo instrucciones
+    })
+
+    # 3. esquema tramitedoc://
+    esq = _esquema_registrado()
+    out.append({
+        "item": "Protocolo tramitedoc://",
+        "ok": esq,
+        "detalle": "registrado" if esq else "no registrado",
+        "accion": None if esq else "esquema",
+    })
+
+    # 4. token conectado
+    tok = _detectar_token_pkcs11() if mw else None
+    out.append({
+        "item": "Token USB conectado",
+        "ok": bool(tok),
+        "detalle": f"detectado ({tok})" if tok else "no detectado",
+        "accion": None,
+    })
+
+    # 5. dependencias Python
+    deps = _deps_presentes()
+    out.append({
+        "item": "Dependencias Python",
+        "ok": deps,
+        "detalle": "instaladas" if deps else "faltan",
+        "accion": None if deps else "deps",
+    })
+
+    return out
+
+
+def auto_instalar(acciones):
+    """Ejecuta las auto-reparaciones que no requieren sudo. Devuelve lista de
+    (item, ok, mensaje). Las que requieren sudo (middleware) se reportan como
+    pendientes con instrucciones."""
+    resultados = []
+    for accion in acciones:
+        if accion == "daemon":
+            try:
+                _ensure_daemon()
+                ok = _sock_alive()
+                resultados.append(("Daemon", ok,
+                                   "arrancado" if ok else "no pudo arrancar"))
+            except Exception as e:
+                resultados.append(("Daemon", False, str(e)))
+        elif accion == "esquema":
+            resultados.append(_registrar_esquema())
+        elif accion == "deps":
+            resultados.append(_instalar_deps())
+        elif accion == "middleware":
+            resultados.append(("Middleware Bit4id", False,
+                               "requiere sudo: ver instrucciones"))
+    return resultados
+
+
+def _registrar_esquema():
+    """Registra tramitedoc:// en el OS actual. Sin sudo (usa el HOME del usuario)."""
+    try:
+        if IS_WIN:
+            import winreg
+            # HKCU\Software\Classes\tramitedoc -> comando
+            exe = sys.executable
+            script = os.path.abspath(__file__)
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                                  r"Software\Classes\tramitedoc") as k:
+                winreg.SetValue(k, None, winreg.REG_SZ, "URL:tramitedoc protocol")
+                winreg.SetValueEx(k, "URL Protocol", 0, winreg.REG_SZ, "")
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                                  r"Software\Classes\tramitedoc\shell\open\command") as k:
+                winreg.SetValue(k, None, winreg.REG_SZ,
+                                f'"{exe}" "{script}" "%1"')
+            return ("Protocolo tramitedoc://", True, "registrado (Windows)")
+        if IS_LINUX:
+            bin_dir = Path.home() / ".local" / "bin"
+            app_dir = Path.home() / ".local" / "share" / "sgd-signer"
+            app_dir.mkdir(parents=True, exist_ok=True)
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(os.path.abspath(__file__), app_dir / "sgd-signer.py")
+            wrapper = bin_dir / "sgd-signer"
+            wrapper.write_text(
+                f"#!/usr/bin/env bash\nexec {sys.executable} "
+                f"{app_dir / 'sgd-signer.py'} \"$@\"\n")
+            wrapper.chmod(0o755)
+            desktop = Path.home() / ".local" / "share" / "applications" / "sgd-signer.desktop"
+            desktop.parent.mkdir(parents=True, exist_ok=True)
+            desktop.write_text(
+                "[Desktop Entry]\nType=Application\n"
+                "Name=SGD-SIGNER (protocolo tramitedoc)\n"
+                f"Exec={wrapper} %u\n"
+                "MimeType=x-scheme-handler/tramitedoc;\nNoDisplay=true\n")
+            desktop.chmod(0o755)
+            subprocess.run(["xdg-mime", "default", "sgd-signer.desktop",
+                            "x-scheme-handler/tramitedoc"], timeout=10)
+            return ("Protocolo tramitedoc://", True, "registrado (Linux)")
+        # macOS: bundle .app
+        app = Path.home() / "Applications" / "SGD-Signer.app"
+        (app / "Contents" / "MacOS").mkdir(parents=True, exist_ok=True)
+        (app / "Contents" / "Resources").mkdir(parents=True, exist_ok=True)
+        (app / "Contents" / "Info.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0"><dict>\n'
+            '<key>CFBundleName</key><string>SGD-Signer</string>\n'
+            '<key>CFBundleIdentifier</key><string>pe.senamhi.sgd-signer</string>\n'
+            '<key>CFBundleVersion</key><string>1.0</string>\n'
+            '<key>CFBundleExecutable</key><string>launcher</string>\n'
+            '<key>CFBundlePackageType</key><string>APPL</string>\n'
+            '<key>CFBundleURLTypes</key><array><dict>\n'
+            '<key>CFBundleURLName</key><string>Tramitedoc</string>\n'
+            '<key>CFBundleURLSchemes</key><array><string>tramitedoc</string></array>\n'
+            '</dict></array>\n</dict></plist>\n')
+        launcher = app / "Contents" / "MacOS" / "launcher"
+        launcher.write_text(
+            f"#!/usr/bin/env bash\nexec {sys.executable} "
+            f"{os.path.abspath(__file__)} \"$@\"\n")
+        launcher.chmod(0o755)
+        subprocess.run([
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+            "LaunchServices.framework/Support/lsregister", "-f", str(app)],
+            timeout=15)
+        return ("Protocolo tramitedoc://", True, "registrado (macOS)")
+    except Exception as e:
+        return ("Protocolo tramitedoc://", False, str(e))
+
+
+def _instalar_deps():
+    """Instala las dependencias Python que falten con pip (sin sudo, en el venv)."""
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                        "pyhanko==0.20.0", "websocket-client", "python-pkcs11"],
+                       timeout=300, check=True)
+        return ("Dependencias Python", _deps_presentes(), "instaladas")
+    except Exception as e:
+        return ("Dependencias Python", False, str(e))
+
+
 def make_signer(cfg, pin):
     """Construye el firmante: PKCS#11 (token USB) si cfg['token'], si no .p12.
 
@@ -1682,6 +1884,52 @@ NOMBRES_TIPO = {"1": "1 · Titular", "2": "2 · Básica", "3": "3 · V°B°",
                 "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción"}
 
 
+def _chequeo_instalacion(root):
+    """Al arrancar la GUI: revisa el estado de instalación y, si falta algo
+    auto-reparable, ofrece arreglarlo con un diálogo (estilo AnyDesk). El
+    middleware Bit4id requiere sudo: se muestra con instrucciones y enlace."""
+    import tkinter as tk
+    from tkinter import messagebox
+    try:
+        diag = diagnostico()
+    except Exception as e:
+        # el diagnóstico no debe romper el arranque de la GUI
+        return
+
+    faltan_auto = [d for d in diag if d["accion"]]
+    falta_mw = [d for d in diag if d["item"].startswith("Middleware") and not d["ok"]]
+
+    if not faltan_auto and not falta_mw:
+        return  # todo OK, no molestar
+
+    # construir el mensaje
+    lineas = []
+    for d in diag:
+        marca = "✓" if d["ok"] else "✗"
+        lineas.append(f"{marca}  {d['item']}: {d['detalle']}")
+    cuerpo = "\n".join(lineas)
+
+    if faltan_auto:
+        cuerpo += "\n\n¿Instalar/arreglar automáticamente lo que falta?"
+        if messagebox.askyesno("sgd-signer — instalación", cuerpo):
+            acciones = [d["accion"] for d in faltan_auto]
+            res = auto_instalar(acciones)
+            resumen = "\n".join(f"{'✓' if ok else '✗'}  {item}: {msg}"
+                                for item, ok, msg in res)
+            messagebox.showinfo("sgd-signer — resultado", resumen)
+            return
+
+    if falta_mw:
+        # middleware requiere sudo: instrucciones claras + enlace de descarga
+        msg = ("Falta el middleware Bit4id (driver PKCS#11) para leer el token USB.\n\n"
+               "Este componente requiere permisos de administrador (sudo) y no se\n"
+               "puede instalar automáticamente desde la app.\n\n"
+               "Descárgalo e instálalo desde el fabricante:\n"
+               "  https://www.bit4id.com/ (sección descargas / middleware)\n\n"
+               "Tras instalarlo, reinicia sgd-signer.")
+        messagebox.showwarning("sgd-signer — middleware requerido", msg)
+
+
 def gui_main(pdf_path=None, tipo=None):
     """GUI de firma manual: abrir PDF, elegir tipo de firma,
     click en la página para posición/imagen por tipo (persistente), gestión de
@@ -2514,6 +2762,10 @@ def gui_main(pdf_path=None, tipo=None):
     except Exception:
         pass
     App(root)
+    # --- chequeo de instalación al arrancar (autocontenido, estilo AnyDesk) ---
+    # Si falta algo crítico (daemon, esquema, deps), se ofrece auto-reparar.
+    # El middleware Bit4id requiere sudo: solo se informa con instrucciones.
+    root.after(300, lambda: _chequeo_instalacion(root))
     root.mainloop()
 
 
@@ -2535,6 +2787,7 @@ def main():
     ap = argparse.ArgumentParser(description="sgd-signer: firma digital SGD SENAMHI (Linux/macOS)")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("certs", help="lista certificados")
+    sub.add_parser("diag", help="diagnóstico de instalación (daemon, middleware, esquema, token, deps)")
     p = sub.add_parser("pin", help="guarda el PIN del certificado")
     p.add_argument("pin")
     p = sub.add_parser("sign", help="firma un PDF directamente")
@@ -2551,6 +2804,11 @@ def main():
 
     if args.cmd == "certs":
         return cmd_certs(args)
+    if args.cmd == "diag":
+        for d in diagnostico():
+            marca = "OK " if d["ok"] else "FALTA"
+            print(f"[{marca}] {d['item']}: {d['detalle']}")
+        return 0
     if args.cmd == "pin":
         return cmd_pin(args)
     if args.cmd == "sign":
