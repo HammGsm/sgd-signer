@@ -2263,7 +2263,7 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self._iconos["firmar"] = _icono(OutlineIcon.PEN, "#FFFFFF")
+            self._iconos["firmar"] = _icono(OutlineIcon.PENCIL, "#FFFFFF")
             self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
                                          image=self._iconos["firmar"], compound="left",
                                          state="disabled", bootstyle="primary")
