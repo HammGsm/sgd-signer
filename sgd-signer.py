@@ -1404,6 +1404,9 @@ def dispatch_gui_op(req, ctx):
     if op == "ELEGIR_CERT":
         cfg["cert_key_id"] = req["key_id"]
         cfg["token_lib"] = req["lib"]
+        # root cause: sin esto, make_signer cae a la rama .p12 -> pick_cert()
+        # -> input() en el daemon sin stdin -> EOFError al guardar el PIN.
+        cfg["token"] = True
         if req.get("serial_token"):
             cfg["cert_token_serial"] = req["serial_token"]
         save_config(cfg)
