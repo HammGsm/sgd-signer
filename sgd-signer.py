@@ -2163,7 +2163,7 @@ def gui_main(pdf_path=None, tipo=None):
                      font=UI["ui_b"]).pack(side="left", padx=(10, 8), pady=8)
             self.pin_pill = pill(pin_bar, "…", UI["warn_bg"], UI["warn_fg"])
             self.pin_pill.pack(side="left", pady=8)
-            ttk.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
+            tb.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
                        bootstyle="primary").pack(side="right", padx=10, pady=6)
             tk.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
@@ -2262,7 +2262,7 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self.btn_firmar = ttk.Button(bottom, text="Firmar", command=self.firmar,
+            self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
                                          state="disabled", bootstyle="primary")
             self.btn_firmar.pack(side="left")
             tk.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
@@ -2359,7 +2359,7 @@ def gui_main(pdf_path=None, tipo=None):
                     tk.Label(fila, text=d["detalle"], bg=UI["bg"], fg=UI["muted"],
                              font=UI["ui"], anchor="w").pack(side="left", padx=8)
                 if faltan_auto:
-                    ttk.Button(body, text="Instalar lo que falta",
+                    tb.Button(body, text="Instalar lo que falta",
                                command=lambda: self._instalar_doctor(body, faltan_auto),
                                bootstyle="primary").pack(pady=(16, 4))
                 else:
@@ -2376,7 +2376,7 @@ def gui_main(pdf_path=None, tipo=None):
                     color = UI["accent_fg"] if ok else UI["danger_fg"]
                     tk.Label(body, text=f"{marca}  {item}: {msg}", bg=UI["bg"],
                              fg=color, font=UI["ui"], anchor="w").pack(anchor="w", pady=2)
-                ttk.Button(body, text="Re-diagnosticar", command=_render,
+                tb.Button(body, text="Re-diagnosticar", command=_render,
                            bootstyle="primary").pack(pady=(16, 4))
 
             _render()
@@ -2449,7 +2449,7 @@ def gui_main(pdf_path=None, tipo=None):
 
             fila3 = tk.Frame(f_pin, bg=UI["surface"])
             fila3.pack(fill="x", padx=12, pady=(0, 10))
-            ttk.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
+            tb.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
                        bootstyle="primary").pack(side="left")
             tk.Button(fila3, text="Olvidar PIN guardado", command=self._olvidar_pin,
                       bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
@@ -2477,7 +2477,7 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="left")
-            ttk.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
+            tb.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
                        bootstyle="primary").pack(side="right")
             self._cfg_certs_data = []
 
@@ -2522,7 +2522,7 @@ def gui_main(pdf_path=None, tipo=None):
                           command=lambda _v: self._cfg_render_firma()).config(
                 bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
             fila_pos.winfo_children()[-1].pack(side="left", padx=(6, 0))
-            ttk.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
+            tb.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
                        bootstyle="primary").pack(side="right")
 
             # vista previa de la firma completa (imagen + texto) como saldrá
@@ -2555,7 +2555,7 @@ def gui_main(pdf_path=None, tipo=None):
                            font=UI["ui"], activebackground=UI["surface"],
                            command=self._cfg_guardar_tsl).pack(anchor="w", padx=12, pady=10)
 
-            ttk.Button(body, text="Cerrar", command=win.destroy,
+            tb.Button(body, text="Cerrar", command=win.destroy,
                        bootstyle="primary").pack(pady=(4, 0))
 
             # cargar apariencia al final (ya existen cfg_pos_lbl y cfg_img_lbl)
