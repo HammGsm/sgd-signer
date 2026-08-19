@@ -2125,12 +2125,17 @@ def gui_main(pdf_path=None, tipo=None):
     import ttkbootstrap as tb
     from pytablericons import TablerIcons, OutlineIcon
 
-    def _icono(nombre, color="#007AFF", size=20, stroke=1.5):
+    def _icono(nombre, color="#007AFF", size=20, stroke=1.5, fondo="#FFFFFF"):
         """Carga un icono Tabler como PhotoImage para usar en botones.
-        stroke 1.5 (no 2.0) a 20px: a 18px el stroke por defecto se ve
-        grueso y pixelado; 1.5 da trazo fino y nítido."""
+        Tkinter PhotoImage NO respeta el canal alfa de RGBA: el fondo
+        transparente se muestra blanco/transparente (iconos 'fantasma').
+        Fix: componer el icono sobre el color de fondo del botón -> RGB."""
         try:
             img = TablerIcons.load(nombre, size=size, color=color, stroke_width=stroke)
+            if img.mode == "RGBA":
+                bg = Image.new("RGB", img.size, fondo)
+                bg.paste(img, mask=img.split()[-1])
+                img = bg
             return ImageTk.PhotoImage(img)
         except Exception:
             return None
@@ -2189,7 +2194,7 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra archivo/tipo ------------------------------------------
             top = tk.Frame(root, bg=UI["bg"])
             top.pack(fill="x", padx=12, pady=(0, 6))
-            self._iconos["abrir"] = _icono(OutlineIcon.FILE, "#FFFFFF")
+            self._iconos["abrir"] = _icono(OutlineIcon.FILE, "#FFFFFF", fondo="#007AFF")
             tb.Button(top, text="Abrir PDF", command=self.abrir, image=self._iconos["abrir"],
                       compound="left", bootstyle="primary").pack(side="left")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
@@ -2204,9 +2209,6 @@ def gui_main(pdf_path=None, tipo=None):
             om.config(bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1, font=UI["ui"])
             om.pack(side="left")
-
-            tb.Button(top, text="Imagen de este tipo…", command=self.elegir_imagen,
-                      bootstyle="light").pack(side="left", padx=(20, 0))
 
             # --- barra navegación/posición -----------------------------------
             nav = tk.Frame(root, bg=UI["bg"])
@@ -2265,7 +2267,7 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self._iconos["firmar"] = _icono(OutlineIcon.PENCIL, "#FFFFFF")
+            self._iconos["firmar"] = _icono(OutlineIcon.PENCIL, "#FFFFFF", fondo="#007AFF")
             self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
                                          image=self._iconos["firmar"], compound="left",
                                          state="disabled", bootstyle="primary")
@@ -2363,10 +2365,15 @@ def gui_main(pdf_path=None, tipo=None):
                              fg=color, font=UI["ui_b"], width=30, anchor="w").pack(side="left")
                     tk.Label(fila, text=d["detalle"], bg=UI["bg"], fg=UI["muted"],
                              font=UI["ui"], anchor="w").pack(side="left", padx=8)
+                    # botón individual de instalar por ítem faltante
+                    if d.get("accion"):
+                        tb.Button(fila, text="Instalar", bootstyle="primary",
+                                  command=lambda a=d["accion"]: self._instalar_doctor(body, [a])
+                                  ).pack(side="right", padx=4)
                 if faltan_auto:
-                    tb.Button(body, text="Instalar lo que falta",
-                               command=lambda: self._instalar_doctor(body, faltan_auto),
-                               bootstyle="primary").pack(pady=(16, 4))
+                    tb.Button(body, text="Instalar todo lo que falta",
+                              command=lambda: self._instalar_doctor(body, faltan_auto),
+                              bootstyle="primary").pack(pady=(16, 4))
                 else:
                     tk.Label(body, text="Todo en orden ✓", bg=UI["bg"], fg=UI["accent_fg"],
                              font=UI["ui_b"]).pack(pady=(16, 4))
