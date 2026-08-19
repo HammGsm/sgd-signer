@@ -628,7 +628,7 @@ def _servicio_instalado():
     """True si el daemon está instalado como servicio de autoarranque del SO."""
     if IS_LINUX:
         return (Path("/etc/systemd/system/sgd-signer.service").exists()
-                or Path.home() / ".config/systemd/user/sgd-signer.service").exists()
+                or (Path.home() / ".config/systemd/user/sgd-signer.service").exists())
     if IS_MAC:
         return (Path.home() / "Library/LaunchAgents/pe.senamhi.sgd-signer.plist").exists()
     return True  # Windows: el daemon se lanza con la GUI, no hay servicio
