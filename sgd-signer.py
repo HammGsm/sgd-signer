@@ -1156,6 +1156,9 @@ def _sock_alive():
             return False
     # Unix: no basta con que el archivo exista — puede ser un socket huérfano
     # de un daemon que ya murió. Probamos la conexión real.
+    # NO borramos aquí: durante el arranque del daemon el socket puede existir
+    # pero aún no escuchar (ConnectionRefused) y borrarlo lo rompería. El
+    # borrado de un socket muerto es responsabilidad de _ensure_daemon.
     if not LOCK_SOCK.exists():
         return False
     try:
@@ -1165,11 +1168,6 @@ def _sock_alive():
         s.close()
         return True
     except Exception:
-        # socket muerto: limpiarlo para que _ensure_daemon lo relance
-        try:
-            LOCK_SOCK.unlink()
-        except Exception:
-            pass
         return False
 
 
@@ -1182,18 +1180,29 @@ def _ensure_daemon():
     """
     if _sock_alive():
         return
-    # binario PyInstaller: sys.executable ES el binario; script: python + .py
+    # socket huérfano de un daemon muerto: borrarlo antes de relanzar
+    if LOCK_SOCK.exists():
+        try:
+            LOCK_SOCK.unlink()
+        except Exception:
+            pass
+    # binario PyInstaller: sys.executable ES el binario; script: python + __file__
+    # Usamos __file__ (no sys.argv[0]) porque si este módulo se importa desde un
+    # test/otro script, sys.argv[0] apunta al test y relanzarlo con --daemon
+    # causaría un bucle de respawn infinito (el test no maneja --daemon).
     if getattr(sys, "frozen", False):
         cmd = [sys.executable, "--daemon"]
     else:
-        cmd = [sys.executable, sys.argv[0], "--daemon"]
+        cmd = [sys.executable, os.path.abspath(__file__), "--daemon"]
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
-    # esperar a que el socket aparezca (máx ~5s)
-    for _ in range(50):
+    # esperar a que el socket aparezca (máx ~6s). El check hace un connect de
+    # hasta 1s si el socket existe pero aún no escucha; con sleep corto no
+    # bloquea demasiado.
+    for _ in range(12):
         if _sock_alive():
             return
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 
 def forward_to_daemon(url):
