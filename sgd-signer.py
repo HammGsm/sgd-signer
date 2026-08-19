@@ -2164,22 +2164,17 @@ def gui_main(pdf_path=None, tipo=None):
             self.pin_pill.pack(side="left", pady=8)
             tb.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
                        bootstyle="primary").pack(side="right", padx=10, pady=6)
-            tk.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=10, pady=4).pack(side="right", padx=6, pady=6)
-            tk.Button(pin_bar, text="Doctor", command=self.abrir_doctor,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=10, pady=4).pack(side="right", padx=6, pady=6)
+            tb.Button(pin_bar, text="Configuración", command=self.abrir_configuracion,
+                      bootstyle="light").pack(side="right", padx=6, pady=6)
+            tb.Button(pin_bar, text="Doctor", command=self.abrir_doctor,
+                      bootstyle="light").pack(side="right", padx=6, pady=6)
             self._refrescar_estado_pin()
 
             # --- barra archivo/tipo ------------------------------------------
             top = tk.Frame(root, bg=UI["bg"])
             top.pack(fill="x", padx=12, pady=(0, 6))
-            tk.Button(top, text="Abrir PDF", command=self.abrir, bg=UI["ink"],
-                      fg="#FFFFFF", activebackground="#333333", relief="flat",
-                      font=UI["ui"], padx=10, pady=4, borderwidth=0).pack(side="left")
+            tb.Button(top, text="Abrir PDF", command=self.abrir,
+                      bootstyle="primary").pack(side="left")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
                                         fg=UI["muted"], font=UI["ui"])
             self.lbl_archivo.pack(side="left", padx=10)
@@ -2193,33 +2188,25 @@ def gui_main(pdf_path=None, tipo=None):
                       highlightbackground=UI["border"], highlightthickness=1, font=UI["ui"])
             om.pack(side="left")
 
-            tk.Button(top, text="Imagen de este tipo…", command=self.elegir_imagen,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=4).pack(side="left", padx=(20, 0))
+            tb.Button(top, text="Imagen de este tipo…", command=self.elegir_imagen,
+                      bootstyle="light").pack(side="left", padx=(20, 0))
 
             # --- barra navegación/posición -----------------------------------
             nav = tk.Frame(root, bg=UI["bg"])
             nav.pack(fill="x", padx=12, pady=(0, 6))
-            tk.Button(nav, text="‹ Pág", command=lambda: self.cambiar_pagina(-1),
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8).pack(side="left")
+            tb.Button(nav, text="‹ Pág", command=lambda: self.cambiar_pagina(-1),
+                      bootstyle="light").pack(side="left")
             self.lbl_pagina = tk.Label(nav, text="- / -", bg=UI["bg"], fg=UI["ink"], font=UI["mono"])
             self.lbl_pagina.pack(side="left", padx=8)
-            tk.Button(nav, text="Pág ›", command=lambda: self.cambiar_pagina(1),
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8).pack(side="left")
+            tb.Button(nav, text="Pág ›", command=lambda: self.cambiar_pagina(1),
+                      bootstyle="light").pack(side="left")
             self.lbl_pos = tk.Label(nav, text="Click en la página para fijar posición (se recuerda por tipo)",
                                      bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
             self.lbl_pos.pack(side="left", padx=16)
 
             # --- controles de zoom (a la derecha de la barra de navegación) ---
             def btn_zoom(txt, cmd, w=3):
-                return tk.Button(nav, text=txt, command=cmd, bg=UI["surface"], fg=UI["ink"],
-                                 relief="flat", highlightbackground=UI["border"],
-                                 highlightthickness=1, font=UI["ui"], width=w)
+                return tb.Button(nav, text=txt, command=cmd, bootstyle="light")
             btn_zoom("Ancho", self.zoom_ancho, 6).pack(side="right", padx=(4, 0))
             btn_zoom("Ajustar", self.zoom_ajustar, 7).pack(side="right", padx=4)
             btn_zoom("+", lambda: self.zoom_paso(1.25)).pack(side="right")
@@ -2264,10 +2251,8 @@ def gui_main(pdf_path=None, tipo=None):
             self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
                                          state="disabled", bootstyle="primary")
             self.btn_firmar.pack(side="left")
-            tk.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=10, pady=6).pack(side="left", padx=(8, 0))
+            tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
+                      bootstyle="light").pack(side="left", padx=(8, 0))
             self.lbl_status = tk.Label(bottom, text="", bg=UI["bg"], fg=UI["muted"], font=UI["mono"])
             self.lbl_status.pack(side="left", padx=10)
 
