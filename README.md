@@ -26,6 +26,28 @@ protocolo `tramitedoc://`.
 
 ## Instalación
 
+### Opción A — binario listo (recomendado)
+
+Descargar de [Releases](https://github.com/HammGsm/sgd-signer/releases) el archivo del sistema:
+
+| Sistema | Archivo |
+|---|---|
+| Linux (RHEL/Oracle/Ubuntu x64) | `sgd-signer-linux-x64.tar.gz` |
+| Windows x64 | `sgd-signer-windows-x64.zip` |
+| macOS Intel | `sgd-signer-macos-x64.tar.gz` |
+| macOS Apple Silicon (M1/M2/M3) | `sgd-signer-macos-arm64.tar.gz` |
+
+```bash
+tar xzf sgd-signer-linux-x64.tar.gz
+./sgd-signer gui
+```
+
+No requiere Python ni dependencias: todo va dentro del binario. En Linux el
+binario se compila sobre glibc 2.34 (RHEL/Oracle Linux 9). En macOS, la primera
+vez: clic derecho → Abrir (Gatekeeper, binario sin firmar por Apple).
+
+### Opción B — desde el código
+
 ```bash
 chmod +x install.sh && ./install.sh
 ```
