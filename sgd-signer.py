@@ -68,6 +68,19 @@ TIPOS = {
     "4": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma avanzada (FIRMA_AVA)
     "5": ("VistoDigital", "[VF]", "Doy V° B°"),                     # V° B° avanzada (VB_AVA)
     "6": ("FirmaDigital", "[F]",  "En señal de conformidad"),      # Firma recepción (FIRMA_REC)
+    "7": ("FirmaDigital", "[F]",  "Por encargo"),                  # Firma por encargo (FIRMA_ENC)
+}
+
+# layout de la imagen dentro del stamp por tipo: (img_x, img_y).
+# firma (1,2,4,7): imagen a la IZQUIERDA del texto; V°B° (3,5) y recepción (6): imagen ARRIBA.
+IMG_LAYOUT = {
+    "1": ("left", "middle"),
+    "2": ("left", "middle"),
+    "3": ("left", "top"),
+    "4": ("left", "middle"),
+    "5": ("left", "top"),
+    "6": ("left", "top"),
+    "7": ("left", "middle"),
 }
 
 
@@ -858,7 +871,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     from pyhanko.stamp import TextStampStyle
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
     from pyhanko.pdf_utils.text import TextBoxStyle
-    from pyhanko.pdf_utils.layout import SimpleBoxLayoutRule, AxisAlignment, Margins
+    from pyhanko.pdf_utils.layout import SimpleBoxLayoutRule, AxisAlignment, Margins, InnerScaling
     from pyhanko.pdf_utils.images import PdfImage
     from pyhanko.pdf_utils.reader import PdfFileReader
     from PIL import Image as PILImage
@@ -958,14 +971,16 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         background = PdfImage(PILImage.open(img_path))
 
     # posición de la imagen DENTRO del stamp (configurable por tipo): el usuario
-    # elige dónde va la imagen respecto al texto. Default = derecha/abajo (como el
-    # original ONPE). Mapeo a AxisAlignment (PDF: y crece hacia arriba).
-    img_x = apariencia_tipo.get("img_x", "right")
-    img_y = apariencia_tipo.get("img_y", "bottom")
+    # elige dónde va la imagen respecto al texto. Default por tipo (IMG_LAYOUT):
+    # firma/encargo → imagen a la izquierda; V°B°/recepción → imagen arriba.
+    # Mapeo a AxisAlignment (PDF: y crece hacia arriba).
+    _dl = IMG_LAYOUT.get(tipo, ("left", "middle"))
+    img_x = apariencia_tipo.get("img_x", _dl[0])
+    img_y = apariencia_tipo.get("img_y", _dl[1])
     x_align = {"left": AxisAlignment.ALIGN_MIN, "center": AxisAlignment.ALIGN_MID,
-               "right": AxisAlignment.ALIGN_MAX}.get(img_x, AxisAlignment.ALIGN_MAX)
+               "right": AxisAlignment.ALIGN_MAX}.get(img_x, AxisAlignment.ALIGN_MIN)
     y_align = {"bottom": AxisAlignment.ALIGN_MIN, "middle": AxisAlignment.ALIGN_MID,
-               "top": AxisAlignment.ALIGN_MAX}.get(img_y, AxisAlignment.ALIGN_MIN)
+               "top": AxisAlignment.ALIGN_MAX}.get(img_y, AxisAlignment.ALIGN_MAX)
 
     style = TextStampStyle(
         stamp_text=stamp_text,
@@ -973,6 +988,10 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         background_layout=SimpleBoxLayoutRule(
             x_align=x_align, y_align=y_align,
             margins=Margins(left=0, right=0, top=0, bottom=0),
+            # NO_SCALING: la imagen se estampa a su tamaño natural (168×84 px),
+            # 100% nítida. SHRINK_TO_FIT (default) la escalaba hacia abajo y la
+            # degradaba (el usuario reportó "se ve borrosa/transparente").
+            inner_content_scaling=InnerScaling.NO_SCALING,
         ),
         text_box_style=TextBoxStyle(
             font_size=7,
@@ -2101,7 +2120,8 @@ UI = {
     "ui": ("Helvetica Neue", 10), "ui_b": ("Helvetica Neue", 10, "bold"),
 }
 NOMBRES_TIPO = {"1": "1 · Titular", "2": "2 · Básica", "3": "3 · V°B°",
-                "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción"}
+                "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción",
+                "7": "7 · Encargo"}
 
 
 def _chequeo_instalacion(root):
