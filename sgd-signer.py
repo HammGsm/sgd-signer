@@ -71,17 +71,41 @@ TIPOS = {
     "7": ("FirmaDigital", "[F]",  "Por encargo"),                  # Firma por encargo (FIRMA_ENC)
 }
 
-# layout de la imagen dentro del stamp por tipo: (img_x, img_y).
-# firma (1,2,4,7): imagen a la IZQUIERDA del texto; V°B° (3,5) y recepción (6): imagen ARRIBA.
-IMG_LAYOUT = {
-    "1": ("left", "middle"),
-    "2": ("left", "middle"),
-    "3": ("left", "top"),
-    "4": ("left", "middle"),
-    "5": ("left", "top"),
-    "6": ("left", "top"),
-    "7": ("left", "middle"),
+# layout EXACTO del original .NET (iTextSharp) por tipo — coordenadas relativas al
+# BBox del campo, extraídas del stream de apariencia de los PDFs de referencia:
+#   (img_w, img_h, img_x, img_y, text_x, text_y_start, font_size, leading)
+# firma (1,2,4,7): imagen 62×31 a la izquierda, texto Helvetica 5pt a la derecha.
+# V°B° (3,5): imagen 75×37.5 arriba, texto 5pt abajo.
+# recepción (6): imagen 71×16.03 (217×49) arriba, texto 5pt abajo.
+STAMP_LAYOUT = {
+    "1": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
+    "2": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
+    "3": (75, 37.5, 7, 36.5, 2, 30.5, 5, 5),
+    "4": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
+    "5": (75, 37.5, 7, 36.5, 2, 30.5, 5, 5),
+    "6": (71, 16.03, 6, 66.97, 1, 62.5, 5, 5),
+    "7": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
 }
+
+
+def partir_cn(cn):
+    """Parte el CN de RENIEC en 3 líneas como el original .NET (iTextSharp):
+    'RUIZ CAYAO Hammerly Scoot FAU 20131366028 hard' →
+      'Firmado digitalmente por RUIZ'
+      'CAYAO Hammerly Scoot FAU'
+      '20131366028 hard'
+    Regla: primer apellido en línea 1, resto del nombre hasta el DNI en línea 2,
+    DNI + sufijo en línea 3."""
+    tokens = cn.split()
+    if not tokens:
+        return ["Firmado digitalmente por (sin CN)"]
+    dni_idx = next((i for i, t in enumerate(tokens) if t.isdigit()), len(tokens))
+    lineas = [
+        "Firmado digitalmente por " + tokens[0],
+        " ".join(tokens[1:dni_idx]),
+        " ".join(tokens[dni_idx:]),
+    ]
+    return [l for l in lineas if l]
 
 
 MESES_ES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
@@ -812,7 +836,9 @@ def make_signer(cfg, pin):
 # en binario PyInstaller los assets viven en sys._MEIPASS, no junto al .py
 ASSETS_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 # imagen de firma real (extraída del MSI original) por tipo; 6→imagenFirma6.jpg, resto→imagenFirma<N>.jpg
+# tipo 7 (por encargo) no tiene imagen propia en el MSI: usa la genérica imagenFirma.jpg.
 IMG_POR_TIPO = {t: ASSETS_DIR / f"imagenFirma{t}.jpg" for t in TIPOS}
+IMG_POR_TIPO["7"] = ASSETS_DIR / "imagenFirma.jpg"
 
 
 FIRMA_W, FIRMA_H = 190, 60  # recuadro de firma manual (pt) — 5 líneas a leading 6 + imagen
@@ -868,10 +894,7 @@ def _contar_firmas(pdf_path, campo_base):
 
 def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg=None):
     from pyhanko.sign import signers, fields
-    from pyhanko.stamp import TextStampStyle
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
-    from pyhanko.pdf_utils.text import TextBoxStyle
-    from pyhanko.pdf_utils.layout import SimpleBoxLayoutRule, AxisAlignment, Margins, InnerScaling
     from pyhanko.pdf_utils.images import PdfImage
     from pyhanko.pdf_utils.reader import PdfFileReader
     from PIL import Image as PILImage
@@ -883,11 +906,6 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     signer = make_signer(cfg, pin)
     subj = signer.signing_cert.subject.native
     cn = subj.get("common_name", "Firmante")
-    # nombre limpio para el stamp: apellido + nombre (sin el "FAU ... hard" del CN)
-    nombre = f"{subj.get('surname') or ''} {subj.get('given_name') or ''}".strip() or cn
-    org = subj.get("organization_name") or ""
-    if "METEOROLOGIA" in org.upper():
-        org = "SENAMHI"
 
     # tamaño de página (puntos) para posiciones relativas
     r = PdfFileReader(open(pdf_path, "rb"))
@@ -936,85 +954,77 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         dy = n_previas * (h + 5)  # 5pt de separación entre firmas
         box = (box[0], max(0, box[1] - dy), box[2], max(0, box[3] - dy))
 
-    # texto visible: replica el layout real del PDF de ejemplo ONPE (sección 10 del CONTRATO.md)
-    # bloque derecho 5pt: nombre partido en líneas de ~25 chars (como el CN del ejemplo)
-    def wrap_cn(name, width=25):
-        words, lines, cur = name.split(), [], ""
-        for w in words:
-            if len(cur) + len(w) + 1 <= width:
-                cur = f"{cur} {w}".strip()
-            else:
-                lines.append(cur)
-                cur = w
-        if cur:
-            lines.append(cur)
-        return lines
-
+    # texto visible: replica el stream EXACTO del original .NET (iTextSharp):
+    # CN partido en 3 líneas (partir_cn) + motivo + fecha, Helvetica 5pt negro.
     fecha_hora = time.strftime("%d.%m.%Y %H:%M:%S -05:00")
-    bloque_cn = "\n".join(wrap_cn(f"Firmado digitalmente por {nombre}"))
-    if org:
-        bloque_cn += f"\n{org}"
-    stamp_text = bloque_cn + f"\nMotivo: {motivo}\nFecha: {fecha_hora}"
-    # tipo 1 (FIRMA_NUM): el widget original lleva número+lugar/fecha arriba, aparte del
-    # bloque firmante — ponytail: una sola caja de texto (no dos columnas independientes
-    # como el original iText); alcanza para el requisito visible, layout 2-col si se pide.
-    if extra.get("NumeroDoc"):
-        stamp_text = f"%(numero_doc)s\n%(lugar_fecha)s\n\n" + stamp_text
-    elif extra.get("Lugar"):
-        stamp_text = f"%(lugar_fecha)s\n" + stamp_text
+    lineas = partir_cn(cn)
+    lineas.append(f"Motivo: {motivo}")
+    lineas.append(f"Fecha: {fecha_hora}")
 
-    img_path = Path(apariencia_tipo["imagen"]) if apariencia_tipo.get("imagen") else IMG_POR_TIPO.get(tipo)
-    background = None
-    if img_path and img_path.exists():
-        # la imagen se estampa TAL CUAL, sin alterar color ni calidad: debe salir
-        # idéntica a la vista previa (que la abre directo con PIL).
-        background = PdfImage(PILImage.open(img_path))
-
-    # posición de la imagen DENTRO del stamp (configurable por tipo): el usuario
-    # elige dónde va la imagen respecto al texto. Default por tipo (IMG_LAYOUT):
-    # firma/encargo → imagen a la izquierda; V°B°/recepción → imagen arriba.
-    # Mapeo a AxisAlignment (PDF: y crece hacia arriba).
-    _dl = IMG_LAYOUT.get(tipo, ("left", "middle"))
-    img_x = apariencia_tipo.get("img_x", _dl[0])
-    img_y = apariencia_tipo.get("img_y", _dl[1])
-    x_align = {"left": AxisAlignment.ALIGN_MIN, "center": AxisAlignment.ALIGN_MID,
-               "right": AxisAlignment.ALIGN_MAX}.get(img_x, AxisAlignment.ALIGN_MIN)
-    y_align = {"bottom": AxisAlignment.ALIGN_MIN, "middle": AxisAlignment.ALIGN_MID,
-               "top": AxisAlignment.ALIGN_MAX}.get(img_y, AxisAlignment.ALIGN_MAX)
-
-    style = TextStampStyle(
-        stamp_text=stamp_text,
-        background=background,
-        background_layout=SimpleBoxLayoutRule(
-            x_align=x_align, y_align=y_align,
-            margins=Margins(left=0, right=0, top=0, bottom=0),
-            # NO_SCALING: la imagen se estampa a su tamaño natural (168×84 px),
-            # 100% nítida. SHRINK_TO_FIT (default) la escalaba hacia abajo y la
-            # degradaba (el usuario reportó "se ve borrosa/transparente").
-            inner_content_scaling=InnerScaling.NO_SCALING,
-        ),
-        text_box_style=TextBoxStyle(
-            font_size=7,
-            leading=8,
-            border_width=0,
-            box_layout_rule=SimpleBoxLayoutRule(
-                x_align=AxisAlignment.ALIGN_MAX, y_align=AxisAlignment.ALIGN_MIN,
-                margins=Margins(left=0, right=4, top=0, bottom=4),
-            ),
-        ),
-        border_width=0,
-    )
-
+    # tipo 1 (FIRMA_NUM): número + lugar/fecha arriba. El original los dibuja en
+    # 12pt aparte; aquí van como líneas extra del bloque 5pt (ponytail: una columna).
     lugar_fecha = extra.get("Lugar") or ""
     if extra.get("FechaLarga"):
         lugar_fecha = f"{lugar_fecha}, {extra['FechaLarga']}" if lugar_fecha else extra["FechaLarga"]
-
-    text_params = {}
     if extra.get("NumeroDoc"):
-        text_params["numero_doc"] = extra["NumeroDoc"]
-        text_params["lugar_fecha"] = lugar_fecha
+        lineas = [extra["NumeroDoc"], lugar_fecha, ""] + lineas
     elif lugar_fecha:
-        text_params["lugar_fecha"] = lugar_fecha
+        lineas = [lugar_fecha] + lineas
+
+    img_path = Path(apariencia_tipo["imagen"]) if apariencia_tipo.get("imagen") else IMG_POR_TIPO.get(tipo)
+    layout = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
+
+    # stamp custom que replica el stream del original: imagen a escala fija (opacidad
+    # 1.0) + texto Helvetica 5pt negro en coordenadas fijas. Reemplaza a TextStampStyle
+    # (Courier 7pt, opacidad 0.6, NO_SCALING) que producía firmas opacas y descolocadas.
+    from pyhanko.stamp import BaseStamp
+    from pyhanko.pdf_utils.content import ResourceType
+    from pyhanko.pdf_utils.generic import TextStringObject, DictionaryObject, pdf_name
+    from pyhanko.pdf_utils.layout import BoxConstraints
+    from io import BytesIO
+
+    class _SgdStamp(BaseStamp):
+        def __init__(self, writer, box):
+            super().__init__(writer=writer, style=None, box=box)
+
+        def render(self):
+            img_w, img_h, img_x, img_y, text_x, text_y_start, font_size, leading = layout
+            cmds = [b'q']
+            if img_path and img_path.exists():
+                img = PdfImage(PILImage.open(img_path), writer=self.writer)
+                # image_ref registra el XObject con el writer; emitimos la matriz cm
+                # con los floats EXACTOS del original (BoxConstraints trunca a int:
+                # 37.5→37, 16.03→16, y el original usa fracciones).
+                ref = img.image_ref
+                name = '/Img' + img.name
+                self.set_resource(ResourceType.XOBJECT, pdf_name(name), ref)
+                cmds.append(b'q %g 0 0 %g %g %g cm %s Do Q' % (img_w, img_h, img_x, img_y, name.encode('ascii')))
+            self.set_resource(
+                ResourceType.FONT, pdf_name('/F1'),
+                DictionaryObject({
+                    pdf_name('/Type'): pdf_name('/Font'),
+                    pdf_name('/BaseFont'): pdf_name('/Helvetica'),
+                    pdf_name('/Subtype'): pdf_name('/Type1'),
+                    pdf_name('/Encoding'): pdf_name('/WinAnsiEncoding'),
+                }),
+            )
+            for i, line in enumerate(lineas):
+                y = text_y_start - i * leading
+                buf = BytesIO()
+                TextStringObject(line).write_to_stream(buf)
+                cmds.append(
+                    b'BT 1 0 0 1 %g %g Tm /F1 %g Tf 0 0 0 rg '
+                    % (text_x, y, font_size) + buf.getvalue() + b' Tj ET'
+                )
+            cmds.append(b'Q')
+            return b' '.join(cmds)
+
+    class _SgdStampStyle:
+        def create_stamp(self, writer, box, text_params):
+            return _SgdStamp(writer, box)
+
+    style = _SgdStampStyle()
+    text_params = {}
 
     # OCSP/CRL online (F9): chequeo informativo tipo check_tsl — NO se cablea a
     # PdfSignatureMetadata.validation_context porque eso fuerza validación de cadena
