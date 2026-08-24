@@ -827,6 +827,32 @@ def firma_box(tipo, W, H, pos=None, ms=0):
     return (W - 180, H - 59 - ms, W - 25, H - 24 - ms)
 
 
+def _contar_firmas(pdf_path, campo_base):
+    """Cuenta los campos de firma existentes cuyo nombre empieza con campo_base.
+    Devuelve el número de firmas ya presentes (0 si ninguna)."""
+    from pyhanko.pdf_utils.reader import PdfFileReader
+    from pyhanko.pdf_utils import generic
+    try:
+        r = PdfFileReader(open(pdf_path, "rb"))
+    except Exception:
+        return 0
+    root = r.root
+    acro = root.get("/AcroForm")
+    if acro is None:
+        return 0
+    acro = r.get_object(acro) if not isinstance(acro, generic.DictionaryObject) else acro
+    fields = acro.get("/Fields")
+    if fields is None:
+        return 0
+    n = 0
+    for f in fields:
+        f = r.get_object(f) if not isinstance(f, generic.DictionaryObject) else f
+        t = f.get("/T")
+        if t is not None and str(t).startswith(campo_base):
+            n += 1
+    return n
+
+
 def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg=None):
     from pyhanko.sign import signers, fields
     from pyhanko.stamp import TextStampStyle
@@ -885,6 +911,17 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
 
     ms = 0  # margen superior (inNumerar) — el portal no lo envía
     box = firma_box(tipo, W, H, pos=pos, ms=ms)
+
+    # apilar firmas múltiples: si ya hay firmas del mismo tipo, numerar el campo
+    # y desplazar la caja hacia abajo para no superponer (el original .NET usaba
+    # FirmaDigital1, FirmaDigital2, ...). Sin esto, append_signature_field lanza
+    # PdfWriteError('Signature field with name ... already exists').
+    n_previas = _contar_firmas(pdf_path, campo)
+    campo_num = campo if n_previas == 0 else f"{campo}{n_previas + 1}"
+    if n_previas > 0:
+        h = box[3] - box[1]  # altura de la firma
+        dy = n_previas * (h + 5)  # 5pt de separación entre firmas
+        box = (box[0], max(0, box[1] - dy), box[2], max(0, box[3] - dy))
 
     # texto visible: replica el layout real del PDF de ejemplo ONPE (sección 10 del CONTRATO.md)
     # bloque derecho 5pt: nombre partido en líneas de ~25 chars (como el CN del ejemplo)
@@ -969,7 +1006,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         check_ocsp_crl(signer)
 
     meta = signers.PdfSignatureMetadata(
-        field_name=campo,
+        field_name=campo_num,
         reason=motivo,
         location=extra.get("Lugar") or "",
         name=cn,
@@ -986,7 +1023,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     # campo de firma visible
     w = IncrementalPdfFileWriter(open(pdf_path, "rb"))
     fields.append_signature_field(
-        w, fields.SigFieldSpec(campo, on_page=pagina - 1, box=box)
+        w, fields.SigFieldSpec(campo_num, on_page=pagina - 1, box=box)
     )
 
     out_path = pdf_path[:-4] + sufijo + ".pdf"
