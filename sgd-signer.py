@@ -927,7 +927,7 @@ def _contar_firmas(pdf_path, campo_base):
     return n
 
 
-def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg=None):
+def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg=None, out_path=None):
     from pyhanko.sign import signers, fields
     from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
     from pyhanko.pdf_utils.images import PdfImage
@@ -1113,7 +1113,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         w, fields.SigFieldSpec(campo_num, on_page=pagina - 1, box=box)
     )
 
-    out_path = pdf_path[:-4] + sufijo + ".pdf"
+    out_path = out_path or (pdf_path[:-4] + sufijo + ".pdf")
     with open(out_path, "wb") as outf:
         pdf_signer.sign_pdf(w, output=outf, appearance_text_params=text_params or None)
     return out_path
@@ -1803,10 +1803,12 @@ def set_apariencia_via_daemon(tipo, imagen=None, pos=None, img_pos=None):
     call_daemon_op(payload)
 
 
-def sign_masivo_via_daemon(pdfs, tipo, pos=None, timeout=300):
-    """Firma N PDFs locales con el mismo tipo/posición. Devuelve (firmados, errores)."""
-    resp = call_daemon_op({"op": "SIGN_MASIVO", "pdfs": pdfs, "tipo": tipo, "pos": pos},
-                          timeout=timeout)
+def sign_masivo_via_daemon(pdfs, tipo, pos=None, modo="pdf", timeout=600):
+    """Firma N PDFs locales con el mismo tipo/posición.
+    modo "pdf" = 1 firma por archivo; modo "hoja" = 1 firma por página.
+    Devuelve (firmados, errores)."""
+    resp = call_daemon_op({"op": "SIGN_MASIVO", "pdfs": pdfs, "tipo": tipo,
+                           "pos": pos, "modo": modo}, timeout=timeout)
     return resp.get("firmados", []), resp.get("errores", [])
 
 
@@ -1959,16 +1961,43 @@ def dispatch_gui_op(req, ctx):
 
     if op == "SIGN_MASIVO":
         # firma N PDFs locales (seleccionados en la GUI) con el mismo tipo/posición.
+        # modo "pdf" = 1 firma por archivo; modo "hoja" = 1 firma por página
+        # (se encadena incrementalmente: página 1 → tmp, página 2 sobre tmp, ...).
         # El diálogo de confirmación ya lo mostró la GUI antes de llamar aquí.
+        import tempfile
         pdfs = req["pdfs"]
         tipo = req.get("tipo", "2")
         pos = tuple(req["pos"]) if req.get("pos") else None
+        modo = req.get("modo", "pdf")
         pin = get_pin(cfg, ctx)
         firmados = []
         errores = []
         for p in pdfs:
             try:
-                out = sign_pdf(p, tipo, None, pin, pos=pos, pagina=1, cfg=cfg)
+                out = None
+                if modo == "hoja":
+                    n = _pdf_num_paginas(p)
+                    if n <= 1:
+                        out = sign_pdf(p, tipo, None, pin, pos=pos, pagina=1, cfg=cfg)
+                    else:
+                        tmp = p
+                        temporales = []
+                        for pg in range(1, n + 1):
+                            if pg < n:
+                                fd, tmp_out = tempfile.mkstemp(suffix=".pdf", prefix="sgd-masiva-")
+                                os.close(fd)
+                                temporales.append(tmp_out)
+                                tmp = sign_pdf(tmp, tipo, None, pin, pos=pos, pagina=pg, cfg=cfg, out_path=tmp_out)
+                            else:
+                                out = sign_pdf(tmp, tipo, None, pin, pos=pos, pagina=pg, cfg=cfg,
+                                               out_path=p[:-4] + TIPOS[tipo][1] + ".pdf")
+                        for t in temporales:
+                            try:
+                                os.unlink(t)
+                            except OSError:
+                                pass
+                else:
+                    out = sign_pdf(p, tipo, None, pin, pos=pos, pagina=1, cfg=cfg)
                 firmados.append(out)
             except Exception as e:
                 errores.append({"pdf": p, "error": f"{type(e).__name__}: {e}"})
@@ -2773,46 +2802,32 @@ def gui_main(pdf_path=None, tipo=None):
 
         def _cfg_render_firma(self):
             """Dibuja la firma como saldrá: imagen en su posición + texto.
-            Usa las mismas proporciones que el stamp real (FIRMA_W x FIRMA_H)."""
+            Usa el layout REAL del tipo (STAMP_LAYOUT) escalado al canvas,
+            para que la preview muestre exactamente las proporciones del PDF."""
             cv = getattr(self, "cfg_firma_canvas", None)
             if cv is None:
                 return
             cv.delete("all")
-            W, H = FIRMA_W * 2, FIRMA_H * 2  # 2x la caja real, misma proporción
+            # layout real del tipo (imagen + texto), escalado 2x
+            tipo = self.cfg_tipo.get()
+            base = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
+            img_w, img_h, img_x, img_y, text_x, text_y, fs, lead = base
+            S = 2  # escala: el canvas es 2x la caja real
+            W, H = FIRMA_W * S, FIRMA_H * S
             img = self.cfg_img_actual_path()
-            img_w = img_h = 0
             if img and img.exists():
                 try:
                     pil = Image.open(img)
-                    pil.thumbnail((W // 2, H - 8))
+                    pil.thumbnail((img_w * S, img_h * S))
                     self._cfg_firma_img_tk = ImageTk.PhotoImage(pil)
-                    img_w, img_h = pil.size
+                    cv.create_image(img_x * S, img_y * S, image=self._cfg_firma_img_tk, anchor="nw")
                 except Exception:
-                    img_w = img_h = 0
-            # posición de la imagen según el selector (left/right/top/bottom)
-            pos = self.cfg_img_pos.get()
-            if pos == "left":
-                ix, iy = 4, (H - img_h) // 2
-            elif pos == "right":
-                ix, iy = W - img_w - 4, (H - img_h) // 2
-            elif pos == "top":
-                ix, iy = (W - img_w) // 2, 4
-            else:  # bottom
-                ix, iy = (W - img_w) // 2, H - img_h - 4
-            if img_w:
-                cv.create_image(ix, iy, image=self._cfg_firma_img_tk, anchor="nw")
-            # texto del stamp: al lado opuesto a la imagen para que no se tape
-            if pos == "right":
-                tx = 6
-            elif pos == "left":
-                tx = img_w + 10 if img_w else 6
-            else:  # top/bottom: texto debajo/encima, centrado
-                tx = 6
-            ty = 5 if pos != "bottom" else (H - img_h - 4 - 40 if img_h else 5)
+                    pass
+            # texto del stamp en su posición real
             texto = ("Firmado digitalmente por\nNOMBRE APELLIDO\nSENAMHI\n"
                      "Motivo: Soy el autor del documento.\nFecha: 01.01.2026 09:00:00 -05:00")
-            cv.create_text(tx, ty, text=texto, anchor="nw", font=("TkDefaultFont", 6),
-                           fill="#111111", width=W - tx - 6)
+            cv.create_text(text_x * S, text_y * S, text=texto, anchor="nw",
+                           font=("TkDefaultFont", 6), fill="#111111", width=W - text_x * S - 6)
             cv.create_rectangle(1, 1, W - 1, H - 1, outline="#B8B8B4", dash=(2, 2))
 
         def cfg_img_actual_path(self):
@@ -2880,32 +2895,132 @@ def gui_main(pdf_path=None, tipo=None):
 
         # --- firma masiva -----------------------------------------------------
         def firma_masiva(self):
-            pdfs = filedialog.askopenfilenames(title="Selecciona los PDF a firmar",
-                                               filetypes=[("PDF", "*.pdf")])
-            if not pdfs:
-                return
-            pdfs = list(pdfs)
-            tipo = self.tipo.get()
-            pos = self.pos_pt
-            if not messagebox.askyesno(
-                "Confirmación de la Firma Digital Masiva",
-                f"Se firmarán {len(pdfs)} documentos con el tipo {NOMBRES_TIPO[tipo]}.\n\n"
-                "Cada firma digital tiene validez y eficacia jurídica. "
-                "Al aceptar declaras haber leído cada archivo. ¿Proceder?"
-            ):
-                return
-            self.lbl_status.config(text=f"Firmando {len(pdfs)} documentos…", fg=UI["muted"])
-            self.root.update_idletasks()
-            try:
-                firmados, errores = sign_masivo_via_daemon(pdfs, tipo, pos=pos)
-                resumen = f"{len(firmados)} firmados, {len(errores)} con error"
-                self.lbl_status.config(text=resumen, fg=UI["accent_fg"] if not errores else UI["warn_fg"])
-                detalle = "\n".join([f"✓ {f}" for f in firmados] +
-                                    [f"✗ {e['pdf']}: {e['error']}" for e in errores])
-                messagebox.showinfo("Firma masiva", f"{resumen}\n\n{detalle}")
-            except Exception as e:
-                self.lbl_status.config(text="Error en firma masiva", fg=UI["danger_fg"])
-                messagebox.showerror("Error", str(e))
+            """Módulo de firma masiva: elegir varios PDFs, agruparlos, elegir
+            tipo de firma y modo (1 firma por PDF / 1 firma por hoja)."""
+            win = tk.Toplevel(self.root)
+            win.title("Firma masiva — sgd-signer")
+            win.geometry("640x520")
+            win.minsize(560, 400)
+            win.configure(bg=UI["bg"])
+            win.transient(self.root)
+            win.grab_set()
+
+            f_lista = tk.Frame(win, bg=UI["surface"], highlightbackground=UI["border"],
+                               highlightthickness=1)
+            f_lista.pack(fill="both", expand=True, padx=16, pady=(16, 8))
+            tk.Label(f_lista, text="Documentos a firmar", bg=UI["surface"], fg=UI["ink"],
+                     font=UI["ui_b"]).pack(anchor="w", padx=12, pady=(10, 4))
+            lista = tk.Listbox(f_lista, selectmode="extended", relief="flat",
+                               font=UI["mono"], highlightbackground=UI["border"],
+                               highlightthickness=1, activestyle="none")
+            lista.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+            fila_lista = tk.Frame(f_lista, bg=UI["surface"])
+            fila_lista.pack(fill="x", padx=12, pady=(0, 10))
+            tk.Button(fila_lista, text="Agregar PDFs…", command=lambda: _agregar(),
+                      bg=UI["surface"], fg=UI["ink"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=8, pady=2).pack(side="left")
+            tk.Button(fila_lista, text="Quitar seleccionados", command=lambda: _quitar(),
+                      bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
+            self._masiva_pdfs = []
+
+            def _agregar():
+                pdfs = filedialog.askopenfilenames(title="Selecciona los PDF a firmar",
+                                                   filetypes=[("PDF", "*.pdf")])
+                for p in pdfs:
+                    if p not in self._masiva_pdfs:
+                        self._masiva_pdfs.append(p)
+                        lista.insert("end", os.path.basename(p))
+                _resumen()
+
+            def _quitar():
+                for i in reversed(lista.curselection()):
+                    lista.delete(i)
+                    del self._masiva_pdfs[i]
+                _resumen()
+
+            def _resumen():
+                n = len(self._masiva_pdfs)
+                lbl_resumen.config(text=f"{n} documento(s) seleccionado(s)")
+
+            f_opc = tk.Frame(win, bg=UI["surface"], highlightbackground=UI["border"],
+                             highlightthickness=1)
+            f_opc.pack(fill="x", padx=16, pady=(0, 8))
+            tk.Label(f_opc, text="Opciones de firma", bg=UI["surface"], fg=UI["ink"],
+                     font=UI["ui_b"]).pack(anchor="w", padx=12, pady=(10, 4))
+
+            fila_tipo = tk.Frame(f_opc, bg=UI["surface"])
+            fila_tipo.pack(fill="x", padx=12, pady=(0, 6))
+            tk.Label(fila_tipo, text="Tipo de firma:", bg=UI["surface"], fg=UI["muted"],
+                     font=UI["ui"]).pack(side="left")
+            tipo_var = tk.StringVar(value=self.tipo.get())
+            tk.OptionMenu(fila_tipo, tipo_var, *[NOMBRES_TIPO[t] for t in sorted(TIPOS)]).config(
+                bg=UI["surface"], fg=UI["ink"], relief="flat",
+                highlightbackground=UI["border"], highlightthickness=1, font=UI["ui"])
+            fila_tipo.winfo_children()[-1].pack(side="left", padx=(8, 0))
+
+            fila_modo = tk.Frame(f_opc, bg=UI["surface"])
+            fila_modo.pack(fill="x", padx=12, pady=(0, 6))
+            tk.Label(fila_modo, text="Modo:", bg=UI["surface"], fg=UI["muted"],
+                     font=UI["ui"]).pack(side="left")
+            modo_var = tk.StringVar(value="pdf")
+            tk.Radiobutton(fila_modo, text="1 firma por PDF", variable=modo_var, value="pdf",
+                           bg=UI["surface"], fg=UI["ink"], font=UI["ui"],
+                           activebackground=UI["surface"]).pack(side="left", padx=(8, 0))
+            tk.Radiobutton(fila_modo, text="1 firma por hoja", variable=modo_var, value="hoja",
+                           bg=UI["surface"], fg=UI["ink"], font=UI["ui"],
+                           activebackground=UI["surface"]).pack(side="left", padx=(8, 0))
+            tk.Label(fila_modo, text="(firma cada página del PDF)", bg=UI["surface"],
+                     fg=UI["muted"], font=UI["ui"]).pack(side="left", padx=(6, 0))
+
+            lbl_resumen = tk.Label(f_opc, text="0 documento(s) seleccionado(s)",
+                                   bg=UI["surface"], fg=UI["muted"], font=UI["mono"])
+            lbl_resumen.pack(anchor="w", padx=12, pady=(0, 10))
+
+            def _firmar():
+                if not self._masiva_pdfs:
+                    messagebox.showwarning("Firma masiva", "Agrega al menos un PDF.")
+                    return
+                tipo = next(t for t, n in NOMBRES_TIPO.items() if n == tipo_var.get())
+                modo = modo_var.get()
+                n_firmas = sum(_pdf_num_paginas(p) for p in self._masiva_pdfs) if modo == "hoja" \
+                    else len(self._masiva_pdfs)
+                if not messagebox.askyesno(
+                    "Confirmación de la Firma Digital Masiva",
+                    f"Se firmarán {len(self._masiva_pdfs)} documento(s) — {n_firmas} firma(s) "
+                    f"({modo_var.get() == 'hoja' and '1 por hoja' or '1 por PDF'}) "
+                    f"con el tipo {NOMBRES_TIPO[tipo]}.\n\n"
+                    "Cada firma digital tiene validez y eficacia jurídica. "
+                    "Al aceptar declaras haber leído cada archivo. ¿Proceder?"
+                ):
+                    return
+                pos = self.pos_pt
+                self.lbl_status.config(text=f"Firmando {n_firmas} firma(s)…", fg=UI["muted"])
+                self.root.update_idletasks()
+                try:
+                    firmados, errores = sign_masivo_via_daemon(self._masiva_pdfs, tipo,
+                                                               pos=pos, modo=modo)
+                    resumen = f"{len(firmados)} firmados, {len(errores)} con error"
+                    self.lbl_status.config(text=resumen,
+                                           fg=UI["accent_fg"] if not errores else UI["warn_fg"])
+                    detalle = "\n".join([f"✓ {f}" for f in firmados] +
+                                         [f"✗ {e['pdf']}: {e['error']}" for e in errores])
+                    messagebox.showinfo("Firma masiva", f"{resumen}\n\n{detalle}")
+                    win.destroy()
+                except Exception as e:
+                    self.lbl_status.config(text="Error en firma masiva", fg=UI["danger_fg"])
+                    messagebox.showerror("Error", str(e))
+
+            fila_btn = tk.Frame(win, bg=UI["bg"])
+            fila_btn.pack(fill="x", padx=16, pady=(0, 16))
+            tk.Button(fila_btn, text="Cancelar", command=win.destroy,
+                      bg=UI["surface"], fg=UI["ink"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=12, pady=4).pack(side="right")
+            tb.Button(fila_btn, text="Firmar", command=_firmar,
+                       bootstyle="primary").pack(side="right", padx=(0, 8))
 
         # --- tipo / imagen -----------------------------------------------------
         def _set_tipo(self, _nombre_mostrado):
