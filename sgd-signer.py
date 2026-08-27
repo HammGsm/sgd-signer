@@ -78,7 +78,7 @@ TIPOS = {
 # V°B° (3,5): imagen 75×37.5 arriba, texto 5pt abajo.
 # recepción (6): imagen 71×16.03 (217×49) arriba, texto 5pt abajo.
 STAMP_LAYOUT = {
-    "1": (70, 35, 323.32, 91, 395.32, 121, 5, 5),
+    "1": (62, 31, 3.39, 1, 68.39, 28, 5, 5),  # = tipo 2 (titular idéntica a básica)
     "2": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
     "3": (75, 37.5, 7, 36.5, 2, 30.5, 5, 5),
     "4": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
@@ -893,13 +893,11 @@ def firma_box(tipo, W, H, pos=None, ms=0):
         x = max(0, min(x, W - FIRMA_W))
         y_top = max(FIRMA_H, min(H - y, H))
         return (x, y_top - FIRMA_H, x + FIRMA_W, y_top)
-    if tipo == "1":   # FIRMA_NUM: ancho casi completo, arriba
-        return (85, H - 140 - ms, W - 27, H - 12 - ms)
     if tipo == "3":   # VB_FIRMA: abajo izquierda
         return (5, 50, 90, 125)
     if tipo == "6":   # FIRMA_REC: abajo izquierda
         return (20, H - 95 - ms, 105, H - 12 - ms)
-    # 2 (básica) y 4/5 (avanzadas sin pos): abajo derecha
+    # 1 (titular, = básica), 2 (básica) y 4/5 (avanzadas sin pos): abajo derecha
     return (W - 180, H - 59 - ms, W - 25, H - 24 - ms)
 
 
@@ -1068,27 +1066,6 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
                     pdf_name('/Encoding'): pdf_name('/WinAnsiEncoding'),
                 }),
             )
-            if self.tipo == "1":
-                # FIRMA_NUM: número 13pt stroke+fill y lugar/fecha 12pt abajo a la
-                # izquierda (stream exacto del original .NET), bloque 5pt a la derecha.
-                numero = extra.get("NumeroDoc", "")
-                lugar_fecha = extra.get("Lugar", "")
-                if extra.get("FechaLarga"):
-                    lugar_fecha = f"{lugar_fecha}, {extra['FechaLarga']}" if lugar_fecha else extra["FechaLarga"]
-                if numero:
-                    buf = BytesIO()
-                    TextStringObject(numero).write_to_stream(buf)
-                    cmds.append(
-                        b'BT 1 0 0 1 1 7 Tm /F1 13 Tf 2 Tr 0.43333 w 0 0 0 RG 0 0 0 rg '
-                        + buf.getvalue() + b' Tj 0 Tr 0 G 1 w ET'
-                    )
-                if lugar_fecha:
-                    buf = BytesIO()
-                    TextStringObject(lugar_fecha).write_to_stream(buf)
-                    cmds.append(
-                        b'BT 1 0 0 1 1 28 Tm /F1 12 Tf 0 0 0 rg '
-                        + buf.getvalue() + b' Tj ET'
-                    )
             for i, line in enumerate(lineas):
                 y = text_y_start - i * leading
                 buf = BytesIO()
