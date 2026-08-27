@@ -87,6 +87,43 @@ STAMP_LAYOUT = {
     "7": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
 }
 
+# posición de la imagen relativa al texto, por tipo (defaults del original .NET):
+# firma (1,2,4,7) → imagen a la IZQUIERDA del texto; V°B° (3,5) y recepción (6) → imagen ENCIMA.
+IMG_POS_DEFAULT = {
+    "1": "left", "2": "left", "3": "top", "4": "left",
+    "5": "top", "6": "top", "7": "left",
+}
+
+
+def _layout_generico(tipo, img_pos, box):
+    """Layout de imagen+texto para una posición dada (left/right/top/bottom).
+    box = (x0, y0, x1, y1) en la página; devuelve la tupla STAMP_LAYOUT (coordenadas
+    relativas al BBox del form XObject). Solo se usa cuando el usuario cambia la
+    posición por defecto del tipo; los defaults usan STAMP_LAYOUT exacto."""
+    base = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
+    img_w, img_h = base[0], base[1]
+    W = box[2] - box[0]
+    H = box[3] - box[1]
+    pad, gap = 2.0, 3.0
+    font_size, leading = 5, 5
+    if img_pos == "left":
+        img_x, img_y = pad, (H - img_h) / 2
+        text_x = img_w + pad + gap
+        text_y = H - pad - font_size
+    elif img_pos == "right":
+        img_x, img_y = W - img_w - pad, (H - img_h) / 2
+        text_x = pad
+        text_y = H - pad - font_size
+    elif img_pos == "top":
+        img_x, img_y = (W - img_w) / 2, H - img_h - pad
+        text_x = pad
+        text_y = H - img_h - pad - gap
+    else:  # bottom
+        img_x, img_y = (W - img_w) / 2, pad
+        text_x = pad
+        text_y = H - pad - font_size
+    return (img_w, img_h, img_x, img_y, text_x, text_y, font_size, leading)
+
 
 def partir_cn(cn):
     """Parte el CN de RENIEC en 3 líneas como el original .NET (iTextSharp):
@@ -972,7 +1009,13 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         lineas = [lugar_fecha] + lineas
 
     img_path = Path(apariencia_tipo["imagen"]) if apariencia_tipo.get("imagen") else IMG_POR_TIPO.get(tipo)
-    layout = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
+    # posición de la imagen relativa al texto (left/right/top/bottom), configurable
+    # por tipo. Defaults del original .NET: firma→left, V°B°/recepción→top.
+    img_pos = apariencia_tipo.get("img_pos") or IMG_POS_DEFAULT.get(tipo, "left")
+    if img_pos == IMG_POS_DEFAULT.get(tipo, "left"):
+        layout = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
+    else:
+        layout = _layout_generico(tipo, img_pos, box)
 
     # stamp custom que replica el stream del original: imagen a escala fija (opacidad
     # 1.0) + texto Helvetica 5pt negro en coordenadas fijas. Reemplaza a TextStampStyle
@@ -1751,16 +1794,14 @@ def get_apariencia_via_daemon():
     return call_daemon_op({"op": "GET_APARIENCIA"})["apariencia"]
 
 
-def set_apariencia_via_daemon(tipo, imagen=None, pos=None, img_x=None, img_y=None):
+def set_apariencia_via_daemon(tipo, imagen=None, pos=None, img_pos=None):
     payload = {"op": "SET_APARIENCIA", "tipo": tipo}
     if imagen is not None:
         payload["imagen"] = imagen
     if pos is not None:
         payload["pos"] = list(pos)
-    if img_x is not None:
-        payload["img_x"] = img_x
-    if img_y is not None:
-        payload["img_y"] = img_y
+    if img_pos is not None:
+        payload["img_pos"] = img_pos
     call_daemon_op(payload)
 
 
@@ -1913,10 +1954,8 @@ def dispatch_gui_op(req, ctx):
             entry["imagen"] = req["imagen"]
         if "pos" in req:
             entry["pos"] = req["pos"]
-        if "img_x" in req:
-            entry["img_x"] = req["img_x"]
-        if "img_y" in req:
-            entry["img_y"] = req["img_y"]
+        if "img_pos" in req:
+            entry["img_pos"] = req["img_pos"]
         save_config(cfg)
         return {"ok": True}
 
@@ -2582,16 +2621,13 @@ def gui_main(pdf_path=None, tipo=None):
                      fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(4, 2))
             fila_pos = tk.Frame(f_img, bg=UI["surface"])
             fila_pos.pack(fill="x", padx=12, pady=(0, 10))
-            self.cfg_img_x = tk.StringVar(value="right")
-            self.cfg_img_y = tk.StringVar(value="bottom")
-            tk.OptionMenu(fila_pos, self.cfg_img_x, "left", "center", "right",
+            self.cfg_img_pos = tk.StringVar(value="left")
+            tk.OptionMenu(fila_pos, self.cfg_img_pos, "left", "right", "top", "bottom",
                           command=lambda _v: self._cfg_render_firma()).config(
                 bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
             fila_pos.winfo_children()[-1].pack(side="left")
-            tk.OptionMenu(fila_pos, self.cfg_img_y, "top", "middle", "bottom",
-                          command=lambda _v: self._cfg_render_firma()).config(
-                bg=UI["surface"], fg=UI["ink"], relief="flat", font=UI["ui"])
-            fila_pos.winfo_children()[-1].pack(side="left", padx=(6, 0))
+            tk.Label(fila_pos, text="(izquierda / derecha / encima / debajo del texto)",
+                     bg=UI["surface"], fg=UI["muted"], font=UI["ui"]).pack(side="left", padx=(6, 0))
             tb.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
                        bootstyle="primary").pack(side="right")
 
@@ -2755,18 +2791,29 @@ def gui_main(pdf_path=None, tipo=None):
                     img_w, img_h = pil.size
                 except Exception:
                     img_w = img_h = 0
-            # posición de la imagen según los selectores (misma semántica que pyhanko)
-            ax = {"left": 4, "center": (W - img_w) // 2, "right": W - img_w - 4}
-            ay = {"top": 4, "middle": (H - img_h) // 2, "bottom": H - img_h - 4}
-            ix = ax.get(self.cfg_img_x.get(), W - img_w - 4)
-            iy = ay.get(self.cfg_img_y.get(), H - img_h - 4)
+            # posición de la imagen según el selector (left/right/top/bottom)
+            pos = self.cfg_img_pos.get()
+            if pos == "left":
+                ix, iy = 4, (H - img_h) // 2
+            elif pos == "right":
+                ix, iy = W - img_w - 4, (H - img_h) // 2
+            elif pos == "top":
+                ix, iy = (W - img_w) // 2, 4
+            else:  # bottom
+                ix, iy = (W - img_w) // 2, H - img_h - 4
             if img_w:
                 cv.create_image(ix, iy, image=self._cfg_firma_img_tk, anchor="nw")
             # texto del stamp: al lado opuesto a la imagen para que no se tape
-            tx = 6 if self.cfg_img_x.get() == "right" else (img_w + 10 if img_w else 6)
+            if pos == "right":
+                tx = 6
+            elif pos == "left":
+                tx = img_w + 10 if img_w else 6
+            else:  # top/bottom: texto debajo/encima, centrado
+                tx = 6
+            ty = 5 if pos != "bottom" else (H - img_h - 4 - 40 if img_h else 5)
             texto = ("Firmado digitalmente por\nNOMBRE APELLIDO\nSENAMHI\n"
                      "Motivo: Soy el autor del documento.\nFecha: 01.01.2026 09:00:00 -05:00")
-            cv.create_text(tx, 5, text=texto, anchor="nw", font=("TkDefaultFont", 6),
+            cv.create_text(tx, ty, text=texto, anchor="nw", font=("TkDefaultFont", 6),
                            fill="#111111", width=W - tx - 6)
             cv.create_rectangle(1, 1, W - 1, H - 1, outline="#B8B8B4", dash=(2, 2))
 
@@ -2788,8 +2835,7 @@ def gui_main(pdf_path=None, tipo=None):
             entry = apariencia.get(self.cfg_tipo.get(), {})
             img = entry.get("imagen")
             self.cfg_img_lbl.config(text=os.path.basename(img) if img else "(imagen por defecto)")
-            self.cfg_img_x.set(entry.get("img_x", "right"))
-            self.cfg_img_y.set(entry.get("img_y", "bottom"))
+            self.cfg_img_pos.set(entry.get("img_pos") or IMG_POS_DEFAULT.get(self.cfg_tipo.get(), "left"))
             pos = entry.get("pos")
             self.cfg_pos_lbl.config(
                 text=f"Posición guardada: x={pos[0]:.0f} y={pos[1]:.0f} pt" if pos
@@ -2822,8 +2868,7 @@ def gui_main(pdf_path=None, tipo=None):
         def _cfg_aplicar_imagen(self):
             try:
                 set_apariencia_via_daemon(self.cfg_tipo.get(),
-                                          img_x=self.cfg_img_x.get(),
-                                          img_y=self.cfg_img_y.get())
+                                          img_pos=self.cfg_img_pos.get())
                 self._cfg_cargar_apariencia()
                 messagebox.showinfo("OK", "Posición de la imagen aplicada.")
             except Exception as e:
