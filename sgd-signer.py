@@ -12,7 +12,7 @@ Flujo:
   3. Conecta al WebSocket del servidor y responde mensajes JSON:
        {destination:"BROWSER", error:"0", message:"OK", sender:"CSHARP", accion, nrOperacion}
   4. EJECUTAR_FIRMA: descarga el PDF, abre la GUI para que el usuario lo lea y firme
-     (PAdES, campo FirmaDigital/VistoDigital, sufijo [NF]/[F]/[VF]) y responde OK.
+     (PAdES, campo FirmaDigital/VistoDigital, sufijo [F]) y responde OK.
      El portal sube el firmado vía CARGAR_DOCUMENTO.
 
 Uso:
@@ -62,11 +62,11 @@ MENSAJE_FIRMA_MASIVA = (
 # --- tipos de firma (idénticos al original) ---------------------------------
 # tipo: (campo, sufijo, motivo)
 TIPOS = {
-    "1": ("FirmaDigital", "[NF]", "Soy el autor del documento"),   # Firma titular (FIRMA_NUM)
+    "1": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma titular (FIRMA_NUM)
     "2": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma básica (FIRMA_BASICO)
-    "3": ("VistoDigital", "[VF]", "Doy V° B°"),                     # V° B° (VB_FIRMA)
+    "3": ("VistoDigital", "[F]",  "Doy V° B°"),                     # V° B° (VB_FIRMA)
     "4": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma avanzada (FIRMA_AVA)
-    "5": ("VistoDigital", "[VF]", "Doy V° B°"),                     # V° B° avanzada (VB_AVA)
+    "5": ("VistoDigital", "[F]",  "Doy V° B°"),                     # V° B° avanzada (VB_AVA)
     "6": ("FirmaDigital", "[F]",  "En señal de conformidad"),      # Firma recepción (FIRMA_REC)
     "7": ("FirmaDigital", "[F]",  "Por encargo"),                  # Firma por encargo (FIRMA_ENC)
 }
