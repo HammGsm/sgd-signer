@@ -18,11 +18,13 @@ else
     echo "[1/4] venv ya existe: $VENV"
 fi
 
-# 2. copiar script
-echo "[2/4] Copiando sgd-signer.py a $APP_DIR ..."
-mkdir -p "$APP_DIR" "$BIN_DIR"
+# 2. copiar script + assets (todo autocontenido en APP_DIR)
+echo "[2/4] Copiando sgd-signer.py y assets a $APP_DIR ..."
+mkdir -p "$APP_DIR" "$BIN_DIR" "$APP_DIR/assets"
 cp "$SRC_DIR/sgd-signer.py" "$APP_DIR/sgd-signer.py"
 chmod +x "$APP_DIR/sgd-signer.py"
+cp "$SRC_DIR"/assets/*.jpg "$APP_DIR/assets/" 2>/dev/null || true
+[ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP_DIR/assets/"
 
 # 3. wrapper en PATH
 cat > "$BIN_DIR/sgd-signer" <<EOF

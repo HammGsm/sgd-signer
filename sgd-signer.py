@@ -12,7 +12,7 @@ Flujo:
   3. Conecta al WebSocket del servidor y responde mensajes JSON:
        {destination:"BROWSER", error:"0", message:"OK", sender:"CSHARP", accion, nrOperacion}
   4. EJECUTAR_FIRMA: descarga el PDF, abre la GUI para que el usuario lo lea y firme
-     (PAdES, campo FirmaDigital/VistoDigital, sufijo [F]) y responde OK.
+     (PAdES, campo FirmaDigital/VistoDigital, sufijo [NF]/[F]/[VF]) y responde OK.
      El portal sube el firmado vía CARGAR_DOCUMENTO.
 
 Uso:
@@ -62,11 +62,11 @@ MENSAJE_FIRMA_MASIVA = (
 # --- tipos de firma (idénticos al original) ---------------------------------
 # tipo: (campo, sufijo, motivo)
 TIPOS = {
-    "1": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma titular (FIRMA_NUM)
+    "1": ("FirmaDigital", "[NF]", "Soy el autor del documento"),   # Firma titular (FIRMA_NUM)
     "2": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma básica (FIRMA_BASICO)
-    "3": ("VistoDigital", "[F]",  "Doy V° B°"),                     # V° B° (VB_FIRMA)
+    "3": ("VistoDigital", "[VF]", "Doy V° B°"),                     # V° B° (VB_FIRMA)
     "4": ("FirmaDigital", "[F]",  "Soy el autor del documento"),   # Firma avanzada (FIRMA_AVA)
-    "5": ("VistoDigital", "[F]",  "Doy V° B°"),                     # V° B° avanzada (VB_AVA)
+    "5": ("VistoDigital", "[VF]", "Doy V° B°"),                     # V° B° avanzada (VB_AVA)
     "6": ("FirmaDigital", "[F]",  "En señal de conformidad"),      # Firma recepción (FIRMA_REC)
     "7": ("FirmaDigital", "[F]",  "Por encargo"),                  # Firma por encargo (FIRMA_ENC)
 }
@@ -78,7 +78,7 @@ TIPOS = {
 # V°B° (3,5): imagen 75×37.5 arriba, texto 5pt abajo.
 # recepción (6): imagen 71×16.03 (217×49) arriba, texto 5pt abajo.
 STAMP_LAYOUT = {
-    "1": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
+    "1": (70, 35, 323.32, 91, 395.32, 121, 5, 5),
     "2": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
     "3": (75, 37.5, 7, 36.5, 2, 30.5, 5, 5),
     "4": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
@@ -998,15 +998,14 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     lineas.append(f"Motivo: {motivo}")
     lineas.append(f"Fecha: {fecha_hora}")
 
-    # tipo 1 (FIRMA_NUM): número + lugar/fecha arriba. El original los dibuja en
-    # 12pt aparte; aquí van como líneas extra del bloque 5pt (ponytail: una columna).
+    # tipo 1 (FIRMA_NUM): número + lugar/fecha se dibujan aparte en 13pt/12pt
+    # (stream exacto del original .NET, ver render()). No van en el bloque 5pt.
     lugar_fecha = extra.get("Lugar") or ""
     if extra.get("FechaLarga"):
         lugar_fecha = f"{lugar_fecha}, {extra['FechaLarga']}" if lugar_fecha else extra["FechaLarga"]
-    if extra.get("NumeroDoc"):
-        lineas = [extra["NumeroDoc"], lugar_fecha, ""] + lineas
-    elif lugar_fecha:
-        lineas = [lugar_fecha] + lineas
+    if tipo != "1" and (extra.get("NumeroDoc") or lugar_fecha):
+        lineas = [extra.get("NumeroDoc") or lugar_fecha, lugar_fecha if extra.get("NumeroDoc") else None, ""] if extra.get("NumeroDoc") else [lugar_fecha] + lineas
+        lineas = [l for l in lineas if l is not None]
 
     img_path = Path(apariencia_tipo["imagen"]) if apariencia_tipo.get("imagen") else IMG_POR_TIPO.get(tipo)
     # posición de la imagen relativa al texto (left/right/top/bottom), configurable
@@ -1027,8 +1026,9 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     from io import BytesIO
 
     class _SgdStamp(BaseStamp):
-        def __init__(self, writer, box):
+        def __init__(self, writer, box, tipo):
             super().__init__(writer=writer, style=None, box=box)
+            self.tipo = tipo
 
         def as_form_xobject(self):
             # pyhanko escribe el BBox con origen arriba-izquierda (0, H, W, 0);
@@ -1068,6 +1068,27 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
                     pdf_name('/Encoding'): pdf_name('/WinAnsiEncoding'),
                 }),
             )
+            if self.tipo == "1":
+                # FIRMA_NUM: número 13pt stroke+fill y lugar/fecha 12pt abajo a la
+                # izquierda (stream exacto del original .NET), bloque 5pt a la derecha.
+                numero = extra.get("NumeroDoc", "")
+                lugar_fecha = extra.get("Lugar", "")
+                if extra.get("FechaLarga"):
+                    lugar_fecha = f"{lugar_fecha}, {extra['FechaLarga']}" if lugar_fecha else extra["FechaLarga"]
+                if numero:
+                    buf = BytesIO()
+                    TextStringObject(numero).write_to_stream(buf)
+                    cmds.append(
+                        b'BT 1 0 0 1 1 7 Tm /F1 13 Tf 2 Tr 0.43333 w 0 0 0 RG 0 0 0 rg '
+                        + buf.getvalue() + b' Tj 0 Tr 0 G 1 w ET'
+                    )
+                if lugar_fecha:
+                    buf = BytesIO()
+                    TextStringObject(lugar_fecha).write_to_stream(buf)
+                    cmds.append(
+                        b'BT 1 0 0 1 1 28 Tm /F1 12 Tf 0 0 0 rg '
+                        + buf.getvalue() + b' Tj ET'
+                    )
             for i, line in enumerate(lineas):
                 y = text_y_start - i * leading
                 buf = BytesIO()
@@ -1081,7 +1102,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
 
     class _SgdStampStyle:
         def create_stamp(self, writer, box, text_params):
-            return _SgdStamp(writer, box)
+            return _SgdStamp(writer, box, tipo)
 
     style = _SgdStampStyle()
     text_params = {}
