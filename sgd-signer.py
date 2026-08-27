@@ -979,13 +979,30 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     # (Courier 7pt, opacidad 0.6, NO_SCALING) que producía firmas opacas y descolocadas.
     from pyhanko.stamp import BaseStamp
     from pyhanko.pdf_utils.content import ResourceType
-    from pyhanko.pdf_utils.generic import TextStringObject, DictionaryObject, pdf_name
+    from pyhanko.pdf_utils.generic import TextStringObject, DictionaryObject, pdf_name, StreamObject, ArrayObject, FloatObject
     from pyhanko.pdf_utils.layout import BoxConstraints
     from io import BytesIO
 
     class _SgdStamp(BaseStamp):
         def __init__(self, writer, box):
             super().__init__(writer=writer, style=None, box=box)
+
+        def as_form_xobject(self):
+            # pyhanko escribe el BBox con origen arriba-izquierda (0, H, W, 0);
+            # el original .NET usa (0, 0, W, H) con origen abajo-izquierda, que
+            # es el sistema de STAMP_LAYOUT. Emitir el BBox del original para
+            # que las coordenadas no salgan invertidas verticalmente.
+            # render() PRIMERO: registra los recursos (imagen/fuente) en self.resources.
+            stream = self.render()
+            return StreamObject({
+                pdf_name('/BBox'): ArrayObject([
+                    FloatObject(0), FloatObject(0),
+                    FloatObject(self.box.width), FloatObject(self.box.height),
+                ]),
+                pdf_name('/Resources'): self.resources.as_pdf_object(),
+                pdf_name('/Type'): pdf_name('/XObject'),
+                pdf_name('/Subtype'): pdf_name('/Form'),
+            }, stream_data=stream)
 
         def render(self):
             img_w, img_h, img_x, img_y, text_x, text_y_start, font_size, leading = layout
