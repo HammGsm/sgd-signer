@@ -578,6 +578,35 @@ def diagnostico():
         "accion": None if svc else "servicio",
     })
 
+    # 7. certificados importados (.p12/.pfx) — guardados en la PC
+    importados = sorted(CERT_DIR.glob("*.p12")) + sorted(CERT_DIR.glob("*.pfx"))
+    out.append({
+        "item": "Certificados importados",
+        "ok": bool(importados),
+        "detalle": (f"{len(importados)} en ~/.sgd-signer/certs/"
+                    if importados else "ninguno (usa 'Importar certificado…')"),
+        "accion": None,
+    })
+
+    # 8. certificado activo (archivo importado o token USB)
+    cfg = load_config()
+    activo = cfg.get("cert")
+    if activo:
+        existe = Path(activo).exists()
+        out.append({
+            "item": "Certificado activo",
+            "ok": existe,
+            "detalle": Path(activo).name if existe else f"no existe: {activo}",
+            "accion": None,
+        })
+    else:
+        out.append({
+            "item": "Certificado activo",
+            "ok": bool(cfg.get("cert_key_id")),
+            "detalle": "token USB (auto)" if cfg.get("cert_key_id") else "ninguno elegido",
+            "accion": None,
+        })
+
     return out
 
 
@@ -1884,6 +1913,10 @@ def importar_cert_via_daemon(archivo, pin=None):
     return call_daemon_op(payload)["archivo"]
 
 
+def eliminar_cert_via_daemon(archivo):
+    call_daemon_op({"op": "ELIMINAR_CERT", "archivo": archivo})
+
+
 def dispatch_gui_op(req, ctx):
     """Verbos del protocolo local de la GUI (F8), todos sobre el socket del daemon
     porque solo el daemon root ve el token/PIN real."""
@@ -2085,6 +2118,22 @@ def dispatch_gui_op(req, ctx):
             cfg.setdefault("cert_pins", {})[str(dst)] = req["pin"]
         save_config(cfg)
         return {"ok": True, "archivo": str(dst)}
+
+    if op == "ELIMINAR_CERT":
+        # borra un .p12/.pfx importado; si era el activo, limpia la selección.
+        # Los tokens USB NO se eliminan: viven en el dispositivo (hardware).
+        target = Path(req["archivo"]).resolve()
+        if not str(target).startswith(str(CERT_DIR.resolve())):
+            return {"ok": False, "error": "solo se pueden eliminar certificados importados"}
+        if not target.exists():
+            return {"ok": False, "error": f"no existe: {target}"}
+        if cfg.get("cert") == str(target):
+            cfg.pop("cert", None)
+            cfg.setdefault("cert_pins", {}).pop(str(target), None)
+            ctx.setdefault("session_pins", {}).pop(str(target), None)
+            save_config(cfg)
+        target.unlink()
+        return {"ok": True}
 
     if op == "SET_APARIENCIA":
         tipo = req["tipo"]
@@ -2742,8 +2791,10 @@ def gui_main(pdf_path=None, tipo=None):
 
             # --- certificado de firma ------------------------------------------
             f_cert = seccion("Certificado de firma")
-            tk.Label(f_cert, text="Certificados detectados en tokens USB y smartcards conectados.",
-                     bg=UI["surface"], fg=UI["muted"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 6))
+            tk.Label(f_cert, text="Certificados importados (.p12/.pfx) y tokens USB conectados.\n"
+                                  "Los importados se guardan en ~/.sgd-signer/certs/ y se pueden eliminar;\n"
+                                  "los tokens viven en el dispositivo y reaparecen al reconectarlo.",
+                     bg=UI["surface"], fg=UI["muted"], font=UI["ui"], justify="left").pack(anchor="w", padx=12, pady=(0, 6))
             cont_cert = tk.Frame(f_cert, bg=UI["surface"])
             cont_cert.pack(fill="x", padx=12, pady=(0, 6))
             self.cfg_cert_lista = tk.Listbox(cont_cert, height=3, relief="flat", font=UI["mono"],
@@ -2762,6 +2813,10 @@ def gui_main(pdf_path=None, tipo=None):
                       font=UI["ui"], padx=8, pady=2).pack(side="left")
             tk.Button(fila_cert, text="Importar certificado…", command=self._cfg_importar_cert,
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
+            tk.Button(fila_cert, text="Eliminar", command=self._cfg_eliminar_cert,
+                      bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
             tb.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
@@ -2986,6 +3041,34 @@ def gui_main(pdf_path=None, tipo=None):
             messagebox.showinfo("Importar certificado",
                                 f"Certificado importado y activado:\n{dst}\n\n"
                                 "La clave quedó guardada; para cambiarla usa 'Ingresar / cambiar PIN'.")
+            self._cfg_detectar_certs()
+
+        def _cfg_eliminar_cert(self):
+            """Elimina un certificado importado (.p12/.pfx). Los tokens USB no se
+            eliminan: viven en el dispositivo y reaparecen al reconectarlo."""
+            sel = self.cfg_cert_lista.curselection()
+            if not sel:
+                messagebox.showinfo("Certificado", "Selecciona un certificado de la lista.")
+                return
+            c = self._cfg_certs_data[sel[0]]
+            if not c.get("archivo"):
+                messagebox.showinfo(
+                    "Certificado de token",
+                    "Los certificados de token USB viven en el dispositivo (hardware) y no se "
+                    "pueden eliminar desde aquí: reaparecen al reconectarlo.\n\n"
+                    "Si quieres dejar de usarlo, elige otro certificado con 'Usar este certificado'.")
+                return
+            if not messagebox.askyesno(
+                    "Eliminar certificado",
+                    f"¿Eliminar el certificado importado?\n\n{c['archivo']}\n\n"
+                    "Se borrará el archivo de ~/.sgd-signer/certs/ y su clave guardada."):
+                return
+            try:
+                eliminar_cert_via_daemon(c["archivo"])
+            except Exception as e:
+                messagebox.showerror("Eliminar certificado", f"No se pudo eliminar: {e}")
+                return
+            messagebox.showinfo("Certificado", "Certificado eliminado.")
             self._cfg_detectar_certs()
 
         def _cfg_render_firma(self):

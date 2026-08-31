@@ -1,4 +1,4 @@
-import sys, os, types, tempfile
+import sys, os, types, tempfile, shutil
 from pathlib import Path
 
 src = open("/opt/sgd-signer/sgd-signer.py").read()
@@ -113,5 +113,33 @@ ctx4 = {"cfg": {"cert": "/tmp/test.p12", "pin": "1234"}, "session_pin": None}
 r = mod.dispatch_gui_op({"op": "ELEGIR_CERT", "key_id": "abcd", "lib": "/x/lib.so"}, ctx4)
 assert r["ok"] and "cert" not in ctx4["cfg"] and ctx4["cfg"]["cert_key_id"] == "abcd"
 print("test10 ELEGIR_CERT token limpia archivo OK")
+
+# --- test 11: ELIMINAR_CERT borra archivo importado y limpia selección ---
+with tempfile.TemporaryDirectory() as td:
+    mod.CONFIG_DIR = Path(td)
+    mod.CERT_DIR = mod.CONFIG_DIR / "certs"
+    mod.CONFIG_FILE = mod.CONFIG_DIR / "config.json"
+    mod.CERT_DIR.mkdir()
+    shutil.copy("/tmp/test.p12", mod.CERT_DIR / "malo.p12")
+    ctx5 = {"cfg": {"cert": str(mod.CERT_DIR / "malo.p12"),
+                    "cert_pins": {str(mod.CERT_DIR / "malo.p12"): "1234"}},
+            "session_pin": None}
+    r = mod.dispatch_gui_op({"op": "ELIMINAR_CERT", "archivo": str(mod.CERT_DIR / "malo.p12")}, ctx5)
+    assert r["ok"], r
+    assert not (mod.CERT_DIR / "malo.p12").exists(), "archivo debe borrarse"
+    assert "cert" not in ctx5["cfg"], "selección debe limpiarse"
+    assert "cert_pins" not in ctx5["cfg"] or not ctx5["cfg"].get("cert_pins"), "clave debe limpiarse"
+    print("test11 ELIMINAR_CERT OK")
+
+# --- test 12: ELIMINAR_CERT rechaza archivos fuera de certs/ ---
+with tempfile.TemporaryDirectory() as td:
+    mod.CONFIG_DIR = Path(td)
+    mod.CERT_DIR = mod.CONFIG_DIR / "certs"
+    mod.CONFIG_FILE = mod.CONFIG_DIR / "config.json"
+    ctx6 = {"cfg": {}, "session_pin": None}
+    r = mod.dispatch_gui_op({"op": "ELIMINAR_CERT", "archivo": "/tmp/test.p12"}, ctx6)
+    assert not r["ok"] and "solo se pueden eliminar" in r["error"], r
+    assert Path("/tmp/test.p12").exists()
+    print("test12 ELIMINAR_CERT fuera de certs rechazado OK")
 
 print("\nTODOS LOS TESTS PASARON")
