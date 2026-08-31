@@ -1212,12 +1212,26 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     # TSA opcional: si cfg['tsa_url'] está configurado, se añade sello de
     # tiempo RFC 3161 a la firma (PAdES B-T). El verificador del portal
     # mostrará la sección TSA en vez de "no se utilizó sello de tiempo".
+    # Soporta login/password (auth) y política de sello (tsa_policy).
     timestamper = None
     tsa_url = (cfg or {}).get("tsa_url")
     if tsa_url:
         try:
             from pyhanko.sign.timestamps import HTTPTimeStamper
-            timestamper = HTTPTimeStamper(tsa_url, timeout=10)
+            tsa_auth = None
+            if (cfg or {}).get("tsa_user"):
+                tsa_auth = ((cfg or {}).get("tsa_user"), (cfg or {}).get("tsa_pass") or "")
+            tsa_policy = (cfg or {}).get("tsa_policy")
+
+            class _TSAConPolitica(HTTPTimeStamper):
+                """Inyecta la política de sello en la petición RFC 3161."""
+                def request_cms(self, message_digest, md_algorithm):
+                    req = super().request_cms(message_digest, md_algorithm)
+                    req["req_policy"] = {"policy_identifier": tsa_policy}
+                    return req
+
+            cls = _TSAConPolitica if tsa_policy else HTTPTimeStamper
+            timestamper = cls(tsa_url, timeout=10, auth=tsa_auth)
         except Exception as e:
             log(f"AVISO: TSA {tsa_url} no disponible ({e}); se firma sin sello")
 
@@ -2549,12 +2563,16 @@ UI = {
 def _hover(btn, bg, fg, bg_h=None, fg_h=None):
     """Micro-transición: cambio sutil de color al pasar el ratón, con un
     pequeño retardo (120ms) que simula fade — tkinter no anima, pero el
-    retardo suaviza la transición visual."""
+    retardo suaviza la transición visual. Respeta el estado disabled."""
     bg_h = bg_h or UI["border"]
     fg_h = fg_h or fg
     def _enter(_e):
+        if str(btn["state"]) == "disabled":
+            return
         btn.after(120, lambda: btn.config(bg=bg_h, fg=fg_h))
     def _leave(_e):
+        if str(btn["state"]) == "disabled":
+            return
         btn.after(120, lambda: btn.config(bg=bg, fg=fg))
     btn.bind("<Enter>", _enter)
     btn.bind("<Leave>", _leave)
@@ -2619,7 +2637,6 @@ def gui_main(pdf_path=None, tipo=None):
     import tkinter as tk
     from tkinter import filedialog, messagebox, simpledialog, ttk
     from PIL import Image, ImageTk
-    import ttkbootstrap as tb
 
     def pill(parent, text, bg, fg):
         lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=UI["mono"],
@@ -2631,8 +2648,18 @@ def gui_main(pdf_path=None, tipo=None):
         b = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
                       relief="flat", highlightbackground=UI["border"],
                       highlightthickness=1, font=UI["ui"], padx=8, pady=2,
-                      activebackground=UI["border"], activeforeground=fg)
+                      activebackground=UI["border"], activeforeground=fg,
+                      disabledforeground=UI["muted"])
         return _hover(b, bg, fg, bg_h=UI["border"])
+
+    def btn_cta(parent, text, command, state="normal"):
+        """Botón CTA sólido oscuro (estilo minimalist-ui, sin ttkbootstrap)."""
+        b = tk.Button(parent, text=text, command=command, bg=UI["accent"],
+                      fg=UI["surface"], relief="flat", highlightthickness=0,
+                      font=UI["ui_b"], padx=14, pady=4, state=state,
+                      activebackground=UI["accent_hover"], activeforeground=UI["surface"],
+                      disabledforeground=UI["muted"])
+        return _hover(b, UI["accent"], UI["surface"], bg_h=UI["accent_hover"])
 
     class App:
         def __init__(self, root):
@@ -2696,14 +2723,10 @@ def gui_main(pdf_path=None, tipo=None):
             self.venc_pill.pack(side="left", padx=(8, 0))
             f_acciones = tk.Frame(pin_bar, bg=UI["surface"])
             f_acciones.grid(row=0, column=1, sticky="e", padx=(0, 10), pady=6)
-            tb.Button(f_acciones, text="🔔", command=self.abrir_notificaciones,
-                      bootstyle="light", width=3).pack(side="right", padx=(4, 0))
-            tb.Button(f_acciones, text="PIN", command=self.pedir_pin,
-                      bootstyle="light").pack(side="right", padx=(4, 0))
-            tb.Button(f_acciones, text="Config", command=self.abrir_configuracion,
-                      bootstyle="light").pack(side="right", padx=(4, 0))
-            tb.Button(f_acciones, text="Doctor", command=self.abrir_doctor,
-                      bootstyle="light").pack(side="right", padx=(4, 0))
+            btn_plano(f_acciones, "🔔", self.abrir_notificaciones).pack(side="right", padx=(4, 0))
+            btn_plano(f_acciones, "PIN", self.pedir_pin).pack(side="right", padx=(4, 0))
+            btn_plano(f_acciones, "Config", self.abrir_configuracion).pack(side="right", padx=(4, 0))
+            btn_plano(f_acciones, "Doctor", self.abrir_doctor).pack(side="right", padx=(4, 0))
             self._refrescar_estado_pin()
             self._refrescar_vencimiento()
 
@@ -2713,8 +2736,7 @@ def gui_main(pdf_path=None, tipo=None):
             top.columnconfigure(0, weight=0)
             top.columnconfigure(1, weight=1)
             top.columnconfigure(2, weight=0)
-            tb.Button(top, text="Abrir PDF", command=self.abrir,
-                      bootstyle="dark").grid(row=0, column=0, sticky="w")
+            btn_cta(top, "Abrir PDF", self.abrir).grid(row=0, column=0, sticky="w")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
                                         fg=UI["muted"], font=UI["ui"])
             self.lbl_archivo.grid(row=0, column=1, sticky="w", padx=10)
@@ -2737,29 +2759,23 @@ def gui_main(pdf_path=None, tipo=None):
             nav.columnconfigure(2, weight=0)
             f_nav = tk.Frame(nav, bg=UI["bg"])
             f_nav.grid(row=0, column=0, sticky="w")
-            tb.Button(f_nav, text="‹", command=lambda: self.cambiar_pagina(-1),
-                      bootstyle="light", width=2).pack(side="left")
+            btn_plano(f_nav, "‹", lambda: self.cambiar_pagina(-1)).pack(side="left")
             self.lbl_pagina = tk.Label(f_nav, text="- / -", bg=UI["bg"], fg=UI["ink"],
                                        font=UI["mono"])
             self.lbl_pagina.pack(side="left", padx=6)
-            tb.Button(f_nav, text="›", command=lambda: self.cambiar_pagina(1),
-                      bootstyle="light", width=2).pack(side="left")
+            btn_plano(f_nav, "›", lambda: self.cambiar_pagina(1)).pack(side="left")
             self.lbl_pos = tk.Label(nav, text="Click en la página para fijar posición",
                                     bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
             self.lbl_pos.grid(row=0, column=1, sticky="w", padx=12)
             f_zoom = tk.Frame(nav, bg=UI["bg"])
             f_zoom.grid(row=0, column=2, sticky="e")
-            tb.Button(f_zoom, text="−", command=lambda: self.zoom_paso(0.8),
-                      bootstyle="light", width=2).pack(side="left")
+            btn_plano(f_zoom, "−", lambda: self.zoom_paso(0.8)).pack(side="left")
             self.lbl_zoom = tk.Label(f_zoom, text="100%", bg=UI["bg"], fg=UI["ink"],
                                      font=UI["mono"], width=5)
             self.lbl_zoom.pack(side="left")
-            tb.Button(f_zoom, text="+", command=lambda: self.zoom_paso(1.25),
-                      bootstyle="light", width=2).pack(side="left")
-            tb.Button(f_zoom, text="Ajustar", command=self.zoom_ajustar,
-                      bootstyle="light").pack(side="left", padx=(4, 0))
-            tb.Button(f_zoom, text="Ancho", command=self.zoom_ancho,
-                      bootstyle="light").pack(side="left", padx=(4, 0))
+            btn_plano(f_zoom, "+", lambda: self.zoom_paso(1.25)).pack(side="left")
+            btn_plano(f_zoom, "Ajustar", self.zoom_ajustar).pack(side="left", padx=(4, 0))
+            btn_plano(f_zoom, "Ancho", self.zoom_ancho).pack(side="left", padx=(4, 0))
 
             # --- visor: canvas con scrollbars (el PDF puede exceder la ventana) --
             visor = tk.Frame(root, bg=UI["border"], highlightbackground=UI["border"],
@@ -2791,19 +2807,18 @@ def gui_main(pdf_path=None, tipo=None):
             # re-ajustar al redimensionar la ventana cuando el modo es "ajustar"
             self.canvas.bind("<Configure>", self._on_canvas_resize)
 
-            # --- barra inferior: firmar + estado ------------------------------
+            # --- barra inferior: firmar + verificar + estado ------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
             bottom.columnconfigure(0, weight=0)
             bottom.columnconfigure(1, weight=1)
             bottom.columnconfigure(2, weight=0)
-            self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
-                                         state="disabled", bootstyle="dark")
+            self.btn_firmar = btn_cta(bottom, "Firmar", self.firmar, state="disabled")
             self.btn_firmar.grid(row=0, column=0, sticky="w")
-            tb.Button(bottom, text="Verificar firma", command=self.verificar,
-                      bootstyle="light").grid(row=0, column=2, sticky="e", padx=(0, 8))
-            tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
-                      bootstyle="light").grid(row=0, column=2, sticky="e")
+            f_acc = tk.Frame(bottom, bg=UI["bg"])
+            f_acc.grid(row=0, column=2, sticky="e")
+            btn_plano(f_acc, "Verificar firma", self.verificar).pack(side="right")
+            btn_plano(f_acc, "Firma masiva…", self.firma_masiva).pack(side="right", padx=(0, 8))
             self.lbl_status = tk.Label(bottom, text="", bg=UI["bg"], fg=UI["muted"], font=UI["mono"])
             self.lbl_status.grid(row=0, column=1, sticky="w", padx=10)
 
@@ -2953,8 +2968,7 @@ def gui_main(pdf_path=None, tipo=None):
                 tk.Label(f_venc, text="(sin certificados)", bg=UI["surface"], fg=UI["muted"],
                          font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 10))
 
-            tb.Button(body, text="Cerrar", command=win.destroy,
-                      bootstyle="dark").pack(pady=(4, 0))
+            btn_cta(body, "Cerrar", win.destroy).pack(pady=(4, 0))
 
         def pedir_pin(self):
             cert_activo = None
@@ -3029,13 +3043,12 @@ def gui_main(pdf_path=None, tipo=None):
                              font=UI["ui"], anchor="w").pack(side="left", padx=8)
                     # botón individual de instalar por ítem faltante
                     if d.get("accion"):
-                        tb.Button(fila, text="Instalar", bootstyle="dark",
-                                  command=lambda a=d["accion"]: self._instalar_doctor(body, [a])
-                                  ).pack(side="right", padx=4)
+                        btn_cta(fila, "Instalar",
+                                lambda a=d["accion"]: self._instalar_doctor(body, [a])
+                                ).pack(side="right", padx=4)
                 if faltan_auto:
-                    tb.Button(body, text="Instalar todo lo que falta",
-                              command=lambda: self._instalar_doctor(body, faltan_auto),
-                              bootstyle="dark").pack(pady=(16, 4))
+                    btn_cta(body, "Instalar todo lo que falta",
+                            lambda: self._instalar_doctor(body, faltan_auto)).pack(pady=(16, 4))
                 else:
                     tk.Label(body, text="Todo en orden ✓", bg=UI["bg"], fg=UI["accent_fg"],
                              font=UI["ui_b"]).pack(pady=(16, 4))
@@ -3050,8 +3063,7 @@ def gui_main(pdf_path=None, tipo=None):
                     color = UI["accent_fg"] if ok else UI["danger_fg"]
                     tk.Label(body, text=f"{marca}  {item}: {msg}", bg=UI["bg"],
                              fg=color, font=UI["ui"], anchor="w").pack(anchor="w", pady=2)
-                tb.Button(body, text="Re-diagnosticar", command=_render,
-                           bootstyle="dark").pack(pady=(16, 4))
+                btn_cta(body, "Re-diagnosticar", _render).pack(pady=(16, 4))
 
             _render()
 
@@ -3125,8 +3137,7 @@ def gui_main(pdf_path=None, tipo=None):
 
             fila3 = tk.Frame(f_pin, bg=UI["surface"])
             fila3.pack(fill="x", padx=12, pady=(0, 10))
-            tb.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
-                       bootstyle="dark").pack(side="left")
+            btn_cta(fila3, "Guardar PIN", lambda: self._guardar_pin_desde_cfg(win)).pack(side="left")
             btn_plano(fila3, "Olvidar PIN guardado", self._olvidar_pin, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
             self._refrescar_cfg_pin_status()
             # --- certificado de firma ------------------------------------------
@@ -3150,8 +3161,7 @@ def gui_main(pdf_path=None, tipo=None):
             btn_plano(fila_cert, "Importar certificado…", self._cfg_importar_cert).pack(side="left", padx=(8, 0))
             btn_plano(fila_cert, "Eliminar", self._cfg_eliminar_cert, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
             btn_plano(fila_cert, "Desbloquear con PUK", self._cfg_desbloquear_puk, fg=UI["warn_fg"]).pack(side="left", padx=(8, 0))
-            tb.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
-                       bootstyle="dark").pack(side="right")
+            btn_cta(fila_cert, "Usar este certificado", self._cfg_usar_cert).pack(side="right")
             self._cfg_certs_data = []
 
             # --- imagen por tipo ----------------------------------------------
@@ -3189,8 +3199,7 @@ def gui_main(pdf_path=None, tipo=None):
             fila_pos.winfo_children()[-1].pack(side="left")
             tk.Label(fila_pos, text="(izquierda / derecha / encima / debajo del texto)",
                      bg=UI["surface"], fg=UI["muted"], font=UI["ui"]).pack(side="left", padx=(6, 0))
-            tb.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
-                       bootstyle="dark").pack(side="right")
+            btn_cta(fila_pos, "Aplicar", self._cfg_aplicar_imagen).pack(side="right")
 
             # vista previa de la firma completa (imagen + texto) como saldrá
             tk.Label(f_img, text="Así se verá la firma:", bg=UI["surface"],
@@ -3222,8 +3231,33 @@ def gui_main(pdf_path=None, tipo=None):
                            font=UI["ui"], activebackground=UI["surface"],
                            command=self._cfg_guardar_tsl).pack(anchor="w", padx=12, pady=10)
 
-            tb.Button(body, text="Cerrar", command=win.destroy,
-                       bootstyle="dark").pack(pady=(4, 0))
+            # --- sello de tiempo (TSA) ----------------------------------------
+            f_tsa = seccion("Sello de tiempo (TSA)")
+            tk.Label(f_tsa, text="Añade sello RFC 3161 a las firmas (PAdES B-T).\n"
+                                 "Ej. Camerfirma: https://tsuq.camerfirma.com/cmf/tsa",
+                     bg=UI["surface"], fg=UI["muted"], font=UI["ui"], justify="left").pack(anchor="w", padx=12, pady=(0, 6))
+            try:
+                _cfg_tsa = get_config_via_daemon()
+            except Exception:
+                _cfg_tsa = {}
+            self.cfg_tsa_url = tk.StringVar(value=_cfg_tsa.get("tsa_url", ""))
+            self.cfg_tsa_user = tk.StringVar(value=_cfg_tsa.get("tsa_user", ""))
+            self.cfg_tsa_pass = tk.StringVar(value=_cfg_tsa.get("tsa_pass", ""))
+            self.cfg_tsa_policy = tk.StringVar(value=_cfg_tsa.get("tsa_policy", ""))
+            for lbl, var, show in (("URL:", self.cfg_tsa_url, None),
+                                   ("Usuario:", self.cfg_tsa_user, None),
+                                   ("Password:", self.cfg_tsa_pass, "*"),
+                                   ("Política:", self.cfg_tsa_policy, None)):
+                fila = tk.Frame(f_tsa, bg=UI["surface"])
+                fila.pack(fill="x", padx=12, pady=(0, 6))
+                tk.Label(fila, text=lbl, bg=UI["surface"], fg=UI["muted"],
+                         font=UI["ui"], width=10, anchor="w").pack(side="left")
+                tk.Entry(fila, textvariable=var, show=show or "", bg=UI["surface"],
+                         fg=UI["ink"], relief="flat", highlightbackground=UI["border"],
+                         highlightthickness=1, font=UI["ui"]).pack(side="left", fill="x", expand=True)
+            btn_cta(f_tsa, "Guardar TSA", self._cfg_guardar_tsa).pack(anchor="w", padx=12, pady=(0, 10))
+
+            btn_cta(body, "Cerrar", win.destroy).pack(pady=(4, 0))
 
             # cargar apariencia al final (ya existen cfg_pos_lbl y cfg_img_lbl)
             self._cfg_cargar_apariencia()
@@ -3524,6 +3558,20 @@ def gui_main(pdf_path=None, tipo=None):
             except Exception as e:
                 messagebox.showerror("Error", str(e))
 
+        def _cfg_guardar_tsa(self):
+            """Guarda la config de TSA (URL, usuario, password, política)."""
+            try:
+                set_config_via_daemon({
+                    "tsa_url": self.cfg_tsa_url.get().strip(),
+                    "tsa_user": self.cfg_tsa_user.get().strip(),
+                    "tsa_pass": self.cfg_tsa_pass.get().strip(),
+                    "tsa_policy": self.cfg_tsa_policy.get().strip(),
+                })
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+                return
+            messagebox.showinfo("TSA", "Configuración de sello de tiempo guardada.")
+
         # --- firma masiva -----------------------------------------------------
         def firma_masiva(self):
             """Módulo de firma masiva: elegir varios PDFs, agruparlos, elegir
@@ -3645,8 +3693,7 @@ def gui_main(pdf_path=None, tipo=None):
             fila_btn = tk.Frame(win, bg=UI["bg"])
             fila_btn.pack(fill="x", padx=16, pady=(0, 16))
             btn_plano(fila_btn, "Cancelar", win.destroy).pack(side="right")
-            tb.Button(fila_btn, text="Firmar", command=_firmar,
-                       bootstyle="dark").pack(side="right", padx=(0, 8))
+            btn_cta(fila_btn, "Firmar", _firmar).pack(side="right", padx=(0, 8))
 
         # --- tipo / imagen -----------------------------------------------------
         def _set_tipo(self, _nombre_mostrado):
@@ -3893,7 +3940,7 @@ def gui_main(pdf_path=None, tipo=None):
                                    fg=UI["accent_fg"] if all(s["valida"] for s in resumen) else UI["warn_fg"])
             messagebox.showinfo("Verificar firma", "\n".join(lineas))
 
-    root = tb.Window(themename="litera")
+    root = tk.Tk()
     root.title("SGD-SIGNER — Firma digital")
     # Responsive: grid ponderado en las barras (estado expande, acciones se
     # compactan) + visor con expand=True — todo visible sin estirar la ventana.
