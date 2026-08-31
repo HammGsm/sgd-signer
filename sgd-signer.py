@@ -240,10 +240,27 @@ def pick_cert(cfg):
     return str(certs[int(n) - 1])
 
 
-def get_pin(cfg, ctx=None):
+def get_pin(cfg, ctx=None, cert_path=None):
     """Resuelve el PIN: sesión en memoria (ctx, solo mientras el daemon vive) >
     guardado en disco (cfg) > variable de entorno > interactivo (solo si hay
-    tty real — el daemon systemd no tiene, preguntar ahí colgaría el proceso)."""
+    tty real — el daemon systemd no tiene, preguntar ahí colgaría el proceso).
+
+    Con cert_path (certificado .p12/.pfx) usa la clave POR ARCHIVO
+    (cfg['cert_pins'] / ctx['session_pins']), no la del token."""
+    if cert_path:
+        if ctx and ctx.get("session_pins", {}).get(cert_path):
+            return ctx["session_pins"][cert_path]
+        pin = cfg.get("cert_pins", {}).get(cert_path)
+        if pin:
+            return pin
+        pin = os.environ.get("SGD_SIGNER_PIN")
+        if pin:
+            return pin
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                "No hay clave guardada para este certificado — usa la GUI o 'sgd-signer pin <PIN>'."
+            )
+        return getpass.getpass("Clave del certificado: ")
     if ctx and ctx.get("session_pin"):
         return ctx["session_pin"]
     pin = cfg.get("pin")
@@ -1801,11 +1818,15 @@ def get_pin_status_via_daemon():
     return call_daemon_op({"op": "GET_STATUS"})["pin_status"]
 
 
-def set_pin_via_daemon(pin, recordar):
+def set_pin_via_daemon(pin, recordar, cert=None):
     """recordar: 'sesion' (memoria, hasta que el daemon reinicie), 'disco' (persistente),
     o None (solo usarlo para esta firma, no recordarlo). Verifica el PIN contra el token
-    real antes de devolver éxito -- si es incorrecto, la excepción llega a la GUI."""
-    call_daemon_op({"op": "SET_PIN", "pin": pin, "recordar": recordar}, timeout=30)
+    real antes de devolver éxito -- si es incorrecto, la excepción llega a la GUI.
+    cert: ruta del .p12/.pfx activo (clave por archivo, no la del token)."""
+    payload = {"op": "SET_PIN", "pin": pin, "recordar": recordar}
+    if cert:
+        payload["cert"] = cert
+    call_daemon_op(payload, timeout=30)
 
 
 def get_apariencia_via_daemon():
@@ -1856,8 +1877,11 @@ def elegir_archivo_cert_via_daemon(archivo):
     call_daemon_op({"op": "ELEGIR_CERT", "archivo": archivo})
 
 
-def importar_cert_via_daemon(archivo):
-    return call_daemon_op({"op": "IMPORTAR_CERT", "archivo": archivo})["archivo"]
+def importar_cert_via_daemon(archivo, pin=None):
+    payload = {"op": "IMPORTAR_CERT", "archivo": archivo}
+    if pin:
+        payload["pin"] = pin
+    return call_daemon_op(payload)["archivo"]
 
 
 def dispatch_gui_op(req, ctx):
@@ -1871,8 +1895,9 @@ def dispatch_gui_op(req, ctx):
         es_pendiente = bool(pend and pend["ruta"] == req["pdf_path"])
         tipo = pend["tipo"] if es_pendiente else req["tipo"]
         extra = pend["extra"] if es_pendiente else (req.get("extra") or {})
+        cert_activo = cfg.get("cert")
         out = sign_pdf(
-            req["pdf_path"], tipo, None, get_pin(cfg, ctx),
+            req["pdf_path"], tipo, None, get_pin(cfg, ctx, cert_activo),
             pos=tuple(req["pos"]) if req.get("pos") else None,
             pagina=req.get("pagina", 1), extra=extra, cfg=cfg,
         )
@@ -1892,7 +1917,15 @@ def dispatch_gui_op(req, ctx):
         return {"ok": True, "out": out}
 
     if op == "GET_STATUS":
-        if ctx.get("session_pin"):
+        if cfg.get("cert"):
+            # certificado importado: su clave vive en cert_pins / session_pins
+            if ctx.get("session_pins", {}).get(cfg["cert"]):
+                estado = "sesion"
+            elif cfg.get("cert_pins", {}).get(cfg["cert"]):
+                estado = "disco"
+            else:
+                estado = "ninguno"
+        elif ctx.get("session_pin"):
             estado = "sesion"
         elif cfg.get("pin"):
             estado = "disco"
@@ -1902,21 +1935,32 @@ def dispatch_gui_op(req, ctx):
 
     if op == "SET_PIN":
         pin = req["pin"]
+        cert_activo = req.get("cert") or cfg.get("cert")
         if req.get("recordar") == "disco":
-            cfg["pin"] = pin
+            if cert_activo:
+                cfg.setdefault("cert_pins", {})[cert_activo] = pin
+            else:
+                cfg["pin"] = pin
             save_config(cfg)
         elif req.get("recordar") == "sesion":
-            ctx["session_pin"] = pin
+            if cert_activo:
+                ctx.setdefault("session_pins", {})[cert_activo] = pin
+            else:
+                ctx["session_pin"] = pin
         # verificación real: si el PIN es incorrecto, make_signer/PKCS11 lo revienta aquí
         # y se lo devolvemos al usuario antes de que crea que quedó guardado.
-        make_signer(cfg, pin)
+        make_signer(cfg, pin, cert_activo)
         return {"ok": True}
 
     if op == "CLEAR_PIN":
         # olvida el PIN de disco y de sesión (sin validar contra el token)
-        cfg["pin"] = ""
+        if cfg.get("cert"):
+            cfg.setdefault("cert_pins", {}).pop(cfg["cert"], None)
+            ctx.setdefault("session_pins", {}).pop(cfg["cert"], None)
+        else:
+            cfg["pin"] = ""
+            ctx["session_pin"] = None
         save_config(cfg)
-        ctx["session_pin"] = None
         return {"ok": True}
 
     if op == "GET_APARIENCIA":
@@ -1945,12 +1989,18 @@ def dispatch_gui_op(req, ctx):
         salida = []
         # 1) archivos .p12/.pfx importados (o en cwd): no requieren token
         for p in find_certs():
+            # la clave del archivo es la suya (cert_pins), NO la del token
+            pin_archivo = None
             try:
-                info = _cert_info_pkcs12(p, pin)
+                pin_archivo = get_pin(cfg, ctx, str(p))
+            except RuntimeError:
+                pass
+            try:
+                info = _cert_info_pkcs12(p, pin_archivo)
             except Exception as e:
-                if pin and isinstance(e, (AttributeError, ValueError)):
+                if pin_archivo and isinstance(e, (AttributeError, ValueError)):
                     info = {"cn": p.name, "org": "", "emisor": "", "no_after": None,
-                            "aviso_import": "PIN incorrecto o archivo corrupto"}
+                            "aviso_import": "clave incorrecta o archivo corrupto"}
                 else:
                     info = {"cn": p.name, "org": "", "emisor": "", "no_after": None,
                             "aviso_import": f"no se pudo leer: {e}"}
@@ -2019,10 +2069,20 @@ def dispatch_gui_op(req, ctx):
             dst = CERT_DIR / (src.stem + "-" + hashlib.sha1(str(src).encode()).hexdigest()[:6] + src.suffix)
         shutil.copy2(src, dst)
         os.chmod(dst, 0o600)
+        # clave del archivo: la pide la GUI (IMPORTAR_CERT lleva 'pin'); se
+        # verifica leyendo el .p12 ANTES de activarlo (si falla, no se toca cfg)
+        if req.get("pin"):
+            try:
+                _cert_info_pkcs12(dst, req["pin"])
+            except Exception:
+                os.unlink(dst)
+                return {"ok": False, "error": "clave incorrecta o archivo corrupto"}
         cfg["cert"] = str(dst)
         cfg.pop("cert_key_id", None)
         cfg.pop("token_lib", None)
         cfg.pop("cert_token_serial", None)
+        if req.get("pin"):
+            cfg.setdefault("cert_pins", {})[str(dst)] = req["pin"]
         save_config(cfg)
         return {"ok": True, "archivo": str(dst)}
 
@@ -2049,7 +2109,8 @@ def dispatch_gui_op(req, ctx):
         tipo = req.get("tipo", "2")
         pos = tuple(req["pos"]) if req.get("pos") else None
         modo = req.get("modo", "pdf")
-        pin = get_pin(cfg, ctx)
+        cert_activo = cfg.get("cert")
+        pin = get_pin(cfg, ctx, cert_activo)
         firmados = []
         errores = []
         for p in pdfs:
@@ -2505,20 +2566,26 @@ def gui_main(pdf_path=None, tipo=None):
             self.pin_pill.config(text=texto, bg=bg, fg=fg)
 
         def pedir_pin(self):
-            pin = simpledialog.askstring("PIN del certificado", "Ingresa el PIN:", show="*")
+            cert_activo = None
+            try:
+                cert_activo = get_config_via_daemon().get("cert")
+            except Exception:
+                pass
+            titulo = "Clave del certificado" if cert_activo else "PIN del certificado"
+            pin = simpledialog.askstring(titulo, "Ingresa la clave:", show="*")
             if not pin:
                 return
             recordar = messagebox.askyesno(
-                "Recordar PIN",
-                "¿Guardar el PIN de forma permanente (sobrevive reinicios del daemon)?\n\n"
+                "Recordar clave",
+                "¿Guardar la clave de forma permanente (sobrevive reinicios del daemon)?\n\n"
                 "Sí = guardar en disco.\nNo = recordar solo mientras el servicio siga corriendo."
             )
             try:
-                set_pin_via_daemon(pin, "disco" if recordar else "sesion")
+                set_pin_via_daemon(pin, "disco" if recordar else "sesion", cert=cert_activo)
                 self._refrescar_estado_pin()
-                messagebox.showinfo("OK", "PIN verificado contra el token y guardado.")
+                messagebox.showinfo("OK", "Clave verificada y guardada.")
             except Exception as e:
-                messagebox.showerror("PIN rechazado", str(e))
+                messagebox.showerror("Clave rechazada", str(e))
 
         # --- ventana de configuración ----------------------------------------
         def abrir_doctor(self):
@@ -2906,14 +2973,19 @@ def gui_main(pdf_path=None, tipo=None):
                 filetypes=[("Certificado PKCS#12", "*.p12 *.pfx"), ("Todos", "*.*")])
             if not archivo:
                 return
+            pin = simpledialog.askstring("Clave del certificado",
+                                         "Ingresa la clave del archivo (se verifica antes de importar):",
+                                         show="*")
+            if not pin:
+                return
             try:
-                dst = importar_cert_via_daemon(archivo)
+                dst = importar_cert_via_daemon(archivo, pin)
             except Exception as e:
                 messagebox.showerror("Importar certificado", f"No se pudo importar: {e}")
                 return
             messagebox.showinfo("Importar certificado",
                                 f"Certificado importado y activado:\n{dst}\n\n"
-                                "Guarda el PIN (botón 'Ingresar / cambiar PIN') para firmar sin que lo pida cada vez.")
+                                "La clave quedó guardada; para cambiarla usa 'Ingresar / cambiar PIN'.")
             self._cfg_detectar_certs()
 
         def _cfg_render_firma(self):
@@ -3340,8 +3412,8 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showinfo("OK", f"Documento firmado:\n{out}")
             except Exception as e:
                 self.lbl_status.config(text="Error al firmar", fg=UI["danger_fg"])
-                if "No hay PIN" in str(e) or "PIN" in str(e):
-                    if messagebox.askyesno("PIN requerido", f"{e}\n\n¿Ingresar el PIN ahora?"):
+                if "No hay PIN" in str(e) or "PIN" in str(e) or "clave" in str(e).lower():
+                    if messagebox.askyesno("Clave requerida", f"{e}\n\n¿Ingresar la clave ahora?"):
                         self.pedir_pin()
                 else:
                     messagebox.showerror("Error al firmar", str(e))

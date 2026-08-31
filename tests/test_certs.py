@@ -40,8 +40,8 @@ certs = mod.find_certs()
 assert any(str(c).endswith("test.p12") for c in certs), certs
 print("test6 find_certs OK:", [str(c) for c in certs])
 
-# --- test 7: dispatch LISTAR_CERTS incluye archivos ---
-ctx = {"cfg": {"pin": "1234"}, "session_pin": None}
+# --- test 7: dispatch LISTAR_CERTS incluye archivos (con su clave propia) ---
+ctx = {"cfg": {"pin": "1234", "cert_pins": {"/tmp/test.p12": "1234"}}, "session_pin": None}
 resp = mod.dispatch_gui_op({"op": "LISTAR_CERTS"}, ctx)
 assert resp["ok"], resp
 archivos = [c for c in resp["certs"] if c.get("archivo")]
@@ -55,20 +55,58 @@ assert r["ok"] and ctx2["cfg"]["cert"] == "/tmp/test.p12"
 assert "cert_key_id" not in ctx2["cfg"]
 print("test8 ELEGIR_CERT archivo OK")
 
-# --- test 9: IMPORTAR_CERT copia y activa ---
+# --- test 9: IMPORTAR_CERT copia, verifica clave y activa ---
 with tempfile.TemporaryDirectory() as td:
     mod.CONFIG_DIR = Path(td)
     mod.CERT_DIR = mod.CONFIG_DIR / "certs"
     mod.CONFIG_FILE = mod.CONFIG_DIR / "config.json"
     ctx3 = {"cfg": {}, "session_pin": None}
-    r = mod.dispatch_gui_op({"op": "IMPORTAR_CERT", "archivo": "/tmp/test.p12"}, ctx3)
+    r = mod.dispatch_gui_op({"op": "IMPORTAR_CERT", "archivo": "/tmp/test.p12", "pin": "1234"}, ctx3)
     assert r["ok"], r
     dst = r["archivo"]
     assert mod.Path(dst).exists()
     mode = mod.Path(dst).stat().st_mode & 0o777
     assert mode == 0o600, oct(mode)
     assert ctx3["cfg"]["cert"] == dst
+    assert ctx3["cfg"]["cert_pins"][dst] == "1234"
     print("test9 IMPORTAR_CERT OK:", dst)
+
+# --- test 9b: IMPORTAR_CERT con clave incorrecta borra y falla ---
+with tempfile.TemporaryDirectory() as td:
+    mod.CONFIG_DIR = Path(td)
+    mod.CERT_DIR = mod.CONFIG_DIR / "certs"
+    mod.CONFIG_FILE = mod.CONFIG_DIR / "config.json"
+    ctx3b = {"cfg": {}, "session_pin": None}
+    r = mod.dispatch_gui_op({"op": "IMPORTAR_CERT", "archivo": "/tmp/test.p12", "pin": "9999"}, ctx3b)
+    assert not r["ok"] and "clave incorrecta" in r["error"], r
+    assert not (mod.CERT_DIR / "test.p12").exists(), "no debe quedar el archivo"
+    assert "cert" not in ctx3b["cfg"]
+    print("test9b IMPORTAR_CERT clave mala OK:", r["error"])
+
+# --- test 9c: SET_PIN con cert guarda en cert_pins y verifica ---
+with tempfile.TemporaryDirectory() as td:
+    mod.CONFIG_DIR = Path(td)
+    mod.CERT_DIR = mod.CONFIG_DIR / "certs"
+    mod.CONFIG_FILE = mod.CONFIG_DIR / "config.json"
+    ctx3c = {"cfg": {"cert": "/tmp/test.p12"}, "session_pin": None}
+    r = mod.dispatch_gui_op({"op": "SET_PIN", "pin": "1234", "recordar": "disco", "cert": "/tmp/test.p12"}, ctx3c)
+    assert r["ok"], r
+    assert ctx3c["cfg"]["cert_pins"]["/tmp/test.p12"] == "1234"
+    assert "pin" not in ctx3c["cfg"]
+    print("test9c SET_PIN cert OK")
+
+# --- test 9d: GET_STATUS con cert activo sin clave -> ninguno ---
+with tempfile.TemporaryDirectory() as td:
+    mod.CONFIG_DIR = Path(td)
+    mod.CERT_DIR = mod.CONFIG_DIR / "certs"
+    mod.CONFIG_FILE = mod.CONFIG_DIR / "config.json"
+    ctx3d = {"cfg": {"cert": "/tmp/test.p12"}, "session_pin": None}
+    r = mod.dispatch_gui_op({"op": "GET_STATUS"}, ctx3d)
+    assert r["pin_status"] == "ninguno", r
+    ctx3d["cfg"]["cert_pins"] = {"/tmp/test.p12": "1234"}
+    r = mod.dispatch_gui_op({"op": "GET_STATUS"}, ctx3d)
+    assert r["pin_status"] == "disco", r
+    print("test9d GET_STATUS cert OK")
 
 # --- test 10: ELEGIR_CERT token limpia cfg['cert'] ---
 ctx4 = {"cfg": {"cert": "/tmp/test.p12", "pin": "1234"}, "session_pin": None}
