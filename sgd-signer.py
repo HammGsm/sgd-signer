@@ -1209,9 +1209,22 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         use_pades_lta=False,
     )
 
+    # TSA opcional: si cfg['tsa_url'] está configurado, se añade sello de
+    # tiempo RFC 3161 a la firma (PAdES B-T). El verificador del portal
+    # mostrará la sección TSA en vez de "no se utilizó sello de tiempo".
+    timestamper = None
+    tsa_url = (cfg or {}).get("tsa_url")
+    if tsa_url:
+        try:
+            from pyhanko.sign.timestamps import HTTPTimeStamper
+            timestamper = HTTPTimeStamper(tsa_url, timeout=10)
+        except Exception as e:
+            log(f"AVISO: TSA {tsa_url} no disponible ({e}); se firma sin sello")
+
     pdf_signer = signers.PdfSigner(
         meta,
         signer,
+        timestamper=timestamper,
         stamp_style=style,
     )
 
@@ -1226,6 +1239,51 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     with open(out_path, "wb") as outf:
         pdf_signer.sign_pdf(w, output=outf, appearance_text_params=text_params or None)
     return out_path
+
+
+def verificar_firma(pdf_path):
+    """Valida las firmas embebidas de un PDF y devuelve un resumen legible.
+
+    Usa pyhanko (validate_pdf_signature) — el mismo motor que firma. Devuelve
+    lista de dicts: {firmante, valida, motivo, fecha, algoritmo, detalle}.
+    Sin dependencias nuevas: pyhanko ya está en el venv.
+    """
+    from pyhanko.pdf_utils.reader import PdfFileReader
+    from pyhanko.sign.validation import validate_pdf_signature
+
+    resumen = []
+    with open(pdf_path, "rb") as f:
+        r = PdfFileReader(f, strict=False)
+        for sig in r.embedded_signatures:
+            try:
+                status = validate_pdf_signature(sig, skip_diff=True)
+                valida = status.valid
+                detalle = status.pretty_print_details() if hasattr(status, "pretty_print_details") else str(status)
+            except Exception as e:
+                valida = False
+                detalle = f"{type(e).__name__}: {e}"
+            try:
+                firmante = sig.signer_cert.subject.native.get("common_name", "?")
+            except Exception:
+                firmante = "?"
+            try:
+                fecha = sig.self_reported_timestamp.isoformat() if sig.self_reported_timestamp else None
+            except Exception:
+                fecha = None
+            try:
+                info = sig.summarise_integrity_info()
+                algo = info.get("signature_algorithm") or info.get("md_algorithm")
+            except Exception:
+                algo = None
+            resumen.append({
+                "firmante": firmante,
+                "valida": valida,
+                "motivo": None,
+                "fecha": fecha,
+                "algoritmo": str(algo) if algo else None,
+                "detalle": detalle,
+            })
+    return resumen
 
 
 def check_tsl(cfg, pin, cert_path=None):
@@ -2489,12 +2547,17 @@ UI = {
 
 
 def _hover(btn, bg, fg, bg_h=None, fg_h=None):
-    """Micro-interacción: cambio sutil de color al pasar el ratón (200ms
-    visual — tkinter no anima, el cambio es instantáneo pero discreto)."""
+    """Micro-transición: cambio sutil de color al pasar el ratón, con un
+    pequeño retardo (120ms) que simula fade — tkinter no anima, pero el
+    retardo suaviza la transición visual."""
     bg_h = bg_h or UI["border"]
     fg_h = fg_h or fg
-    btn.bind("<Enter>", lambda _e: btn.config(bg=bg_h, fg=fg_h))
-    btn.bind("<Leave>", lambda _e: btn.config(bg=bg, fg=fg))
+    def _enter(_e):
+        btn.after(120, lambda: btn.config(bg=bg_h, fg=fg_h))
+    def _leave(_e):
+        btn.after(120, lambda: btn.config(bg=bg, fg=fg))
+    btn.bind("<Enter>", _enter)
+    btn.bind("<Leave>", _leave)
     return btn
 NOMBRES_TIPO = {"1": "1 · Titular", "2": "2 · Básica", "3": "3 · V°B°",
                 "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción",
@@ -2593,6 +2656,27 @@ def gui_main(pdf_path=None, tipo=None):
             # La configuración no lo llama y por eso se ve bien.
             style = ttk.Style()
             style.configure("TFrame", background=UI["bg"])
+            # Unificar TODOS los botones ttkbootstrap a la paleta (el tema
+            # "litera" pinta hover azul y primary azul — fuera de la paleta).
+            # light.TButton = secundario (superficie + borde), dark.TButton = CTA.
+            style.configure("light.TButton",
+                            background=UI["surface"], foreground=UI["ink"],
+                            bordercolor=UI["border"], lightcolor=UI["surface"],
+                            darkcolor=UI["surface"], focuscolor=UI["border"],
+                            padding=(10, 4), font=UI["ui"])
+            style.map("light.TButton",
+                      background=[("active", UI["border"]), ("pressed", UI["border"]),
+                                  ("disabled", UI["bg"])],
+                      foreground=[("disabled", UI["muted"])])
+            style.configure("dark.TButton",
+                            background=UI["accent"], foreground=UI["surface"],
+                            bordercolor=UI["accent"], lightcolor=UI["accent"],
+                            darkcolor=UI["accent"], focuscolor=UI["accent"],
+                            padding=(12, 4), font=UI["ui"])
+            style.map("dark.TButton",
+                      background=[("active", UI["accent_hover"]), ("pressed", UI["accent_hover"]),
+                                  ("disabled", UI["border"])],
+                      foreground=[("disabled", UI["muted"])])
 
             # --- barra superior: certificado + acciones ----------------------
             # Grid ponderado: columna 0 (estado) expande, columna 1 (botones)
@@ -2716,6 +2800,8 @@ def gui_main(pdf_path=None, tipo=None):
             self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
                                          state="disabled", bootstyle="dark")
             self.btn_firmar.grid(row=0, column=0, sticky="w")
+            tb.Button(bottom, text="Verificar firma", command=self.verificar,
+                      bootstyle="light").grid(row=0, column=2, sticky="e", padx=(0, 8))
             tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
                       bootstyle="light").grid(row=0, column=2, sticky="e")
             self.lbl_status = tk.Label(bottom, text="", bg=UI["bg"], fg=UI["muted"], font=UI["mono"])
@@ -3771,6 +3857,41 @@ def gui_main(pdf_path=None, tipo=None):
                     messagebox.showerror("Error al firmar", str(e))
             finally:
                 self.btn_firmar.config(state="normal")
+
+        def verificar(self):
+            """Verifica las firmas del PDF abierto con pyhanko y muestra el
+            resultado en un diálogo (misma info que el portal: firmante,
+            validez, motivo, fecha, algoritmo)."""
+            if not self.pdf_path:
+                messagebox.showinfo("Verificar firma", "Abre un PDF primero.")
+                return
+            self.lbl_status.config(text="Verificando firma…", fg=UI["muted"])
+            self.root.update_idletasks()
+            try:
+                resumen = verificar_firma(self.pdf_path)
+            except Exception as e:
+                self.lbl_status.config(text="Error al verificar", fg=UI["danger_fg"])
+                messagebox.showerror("Verificar firma", f"No se pudo verificar: {e}")
+                return
+            if not resumen:
+                self.lbl_status.config(text="Sin firmas en el documento", fg=UI["warn_fg"])
+                messagebox.showinfo("Verificar firma", "El documento no tiene firmas digitales.")
+                return
+            lineas = []
+            for s in resumen:
+                estado = "VÁLIDA" if s["valida"] else "NO VÁLIDA"
+                lineas.append(f"{'✓' if s['valida'] else '✗'} {estado}")
+                lineas.append(f"  Firmante: {s['firmante']}")
+                if s.get("fecha"):
+                    lineas.append(f"  Fecha: {s['fecha']}")
+                if s.get("algoritmo"):
+                    lineas.append(f"  Algoritmo: {s['algoritmo']}")
+                if s.get("motivo"):
+                    lineas.append(f"  Motivo: {s['motivo']}")
+                lineas.append("")
+            self.lbl_status.config(text=f"{sum(1 for s in resumen if s['valida'])}/{len(resumen)} firmas válidas",
+                                   fg=UI["accent_fg"] if all(s["valida"] for s in resumen) else UI["warn_fg"])
+            messagebox.showinfo("Verificar firma", "\n".join(lineas))
 
     root = tb.Window(themename="litera")
     root.title("SGD-SIGNER — Firma digital")
