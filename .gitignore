@@ -1,18 +1,6 @@
-# Python
+# PyInstaller
+build/
+dist/
+*.spec
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-
-# Config local con secretos (PIN del token) — NUNCA versionar
-config.json
-*.p12
-*.pfx
-
-# Artefactos de firma
-*[F].pdf
-*[NF].pdf
-
-# OS
-.DS_Store
+*.pyc
