@@ -415,7 +415,13 @@ def listar_certificados(pin=None):
                         # un módulo que no puede abrir esta tarjeta (p.ej. OpenSC
                         # sobre una faceta CNS sin PIN de usuario) no es un error:
                         # otro módulo sí la expone. Se omite en silencio.
+                        # EXCEPCIÓN: PIN bloqueado — el token SÍ está presente y
+                        # hay que mostrarlo con aviso, no hacerlo desaparecer.
                         log(f"PKCS#11 {Path(lib_path).name}/{base['token']}: {type(e).__name__}")
+                        if "PinLocked" in type(e).__name__ or "PIN_LOCKED" in str(e):
+                            encontrados.append({**base, "cn": f"(token {base['token']} — PIN BLOQUEADO)",
+                                                "key_id": None, "listo": False,
+                                                "bloqueado": True})
                         continue
                     try:
                         nuevos = _certs_de_sesion(sess, base)
@@ -2062,6 +2068,7 @@ def dispatch_gui_op(req, ctx):
                 "key_id": c["key_id"].hex() if c.get("key_id") else None,
                 "listo": c.get("listo", False), "ok": ok, "avisos": msgs,
                 "activo": bool(c.get("key_id") and c["key_id"].hex() == elegido),
+                "bloqueado": bool(c.get("bloqueado")),
             })
         return {"ok": True, "certs": salida}
 
@@ -2985,6 +2992,9 @@ def gui_main(pdf_path=None, tipo=None):
             if c.get("org"):
                 lineas.append(c["org"])
             lineas += c.get("avisos", [])
+            if c.get("bloqueado"):
+                lineas.append("El PIN del token está BLOQUEADO (se falló varias veces).")
+                lineas.append("Desbloquéalo con el PUK o en el portal del fabricante.")
             if c.get("archivo"):
                 lineas.append(f"Archivo: {c['archivo']}")
             else:
