@@ -2550,6 +2550,14 @@ def gui_main(pdf_path=None, tipo=None):
                         padx=8, pady=2)
         return lbl
 
+    def btn_plano(parent, text, command, fg=UI["ink"], bg=UI["surface"]):
+        """Botón plano con borde 1px y hover sutil (estilo minimalist-ui)."""
+        b = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                      relief="flat", highlightbackground=UI["border"],
+                      highlightthickness=1, font=UI["ui"], padx=8, pady=2,
+                      activebackground=UI["border"], activeforeground=fg)
+        return _hover(b, bg, fg, bg_h=UI["border"])
+
     class App:
         def __init__(self, root):
             self.root = root
@@ -2609,7 +2617,7 @@ def gui_main(pdf_path=None, tipo=None):
             top.columnconfigure(1, weight=1)
             top.columnconfigure(2, weight=0)
             tb.Button(top, text="Abrir PDF", command=self.abrir,
-                      bootstyle="primary").grid(row=0, column=0, sticky="w")
+                      bootstyle="dark").grid(row=0, column=0, sticky="w")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
                                         fg=UI["muted"], font=UI["ui"])
             self.lbl_archivo.grid(row=0, column=1, sticky="w", padx=10)
@@ -2693,7 +2701,7 @@ def gui_main(pdf_path=None, tipo=None):
             bottom.columnconfigure(1, weight=1)
             bottom.columnconfigure(2, weight=0)
             self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
-                                         state="disabled", bootstyle="primary")
+                                         state="disabled", bootstyle="dark")
             self.btn_firmar.grid(row=0, column=0, sticky="w")
             tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
                       bootstyle="light").grid(row=0, column=2, sticky="e")
@@ -2845,7 +2853,7 @@ def gui_main(pdf_path=None, tipo=None):
                          font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 10))
 
             tb.Button(body, text="Cerrar", command=win.destroy,
-                      bootstyle="primary").pack(pady=(4, 0))
+                      bootstyle="dark").pack(pady=(4, 0))
 
         def pedir_pin(self):
             cert_activo = None
@@ -2920,13 +2928,13 @@ def gui_main(pdf_path=None, tipo=None):
                              font=UI["ui"], anchor="w").pack(side="left", padx=8)
                     # botón individual de instalar por ítem faltante
                     if d.get("accion"):
-                        tb.Button(fila, text="Instalar", bootstyle="primary",
+                        tb.Button(fila, text="Instalar", bootstyle="dark",
                                   command=lambda a=d["accion"]: self._instalar_doctor(body, [a])
                                   ).pack(side="right", padx=4)
                 if faltan_auto:
                     tb.Button(body, text="Instalar todo lo que falta",
                               command=lambda: self._instalar_doctor(body, faltan_auto),
-                              bootstyle="primary").pack(pady=(16, 4))
+                              bootstyle="dark").pack(pady=(16, 4))
                 else:
                     tk.Label(body, text="Todo en orden ✓", bg=UI["bg"], fg=UI["accent_fg"],
                              font=UI["ui_b"]).pack(pady=(16, 4))
@@ -2942,7 +2950,7 @@ def gui_main(pdf_path=None, tipo=None):
                     tk.Label(body, text=f"{marca}  {item}: {msg}", bg=UI["bg"],
                              fg=color, font=UI["ui"], anchor="w").pack(anchor="w", pady=2)
                 tb.Button(body, text="Re-diagnosticar", command=_render,
-                           bootstyle="primary").pack(pady=(16, 4))
+                           bootstyle="dark").pack(pady=(16, 4))
 
             _render()
 
@@ -3015,13 +3023,9 @@ def gui_main(pdf_path=None, tipo=None):
             fila3 = tk.Frame(f_pin, bg=UI["surface"])
             fila3.pack(fill="x", padx=12, pady=(0, 10))
             tb.Button(fila3, text="Guardar PIN", command=lambda: self._guardar_pin_desde_cfg(win),
-                       bootstyle="primary").pack(side="left")
-            tk.Button(fila3, text="Olvidar PIN guardado", command=self._olvidar_pin,
-                      bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=10, pady=4).pack(side="left", padx=(8, 0))
+                       bootstyle="dark").pack(side="left")
+            btn_plano(fila3, "Olvidar PIN guardado", self._olvidar_pin, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
             self._refrescar_cfg_pin_status()
-
             # --- certificado de firma ------------------------------------------
             f_cert = seccion("Certificado de firma")
             tk.Label(f_cert, text="Certificados importados (.p12/.pfx) y tokens USB conectados.\n"
@@ -3040,24 +3044,12 @@ def gui_main(pdf_path=None, tipo=None):
             self.cfg_cert_detalle.pack(fill="x", padx=12, pady=(0, 6))
             fila_cert = tk.Frame(f_cert, bg=UI["surface"])
             fila_cert.pack(fill="x", padx=12, pady=(0, 10))
-            tk.Button(fila_cert, text="Detectar certificados", command=self._cfg_detectar_certs,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="left")
-            tk.Button(fila_cert, text="Importar certificado…", command=self._cfg_importar_cert,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
-            tk.Button(fila_cert, text="Eliminar", command=self._cfg_eliminar_cert,
-                      bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
-            tk.Button(fila_cert, text="Desbloquear con PUK", command=self._cfg_desbloquear_puk,
-                      bg=UI["surface"], fg=UI["warn_fg"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
+            btn_plano(fila_cert, "Detectar certificados", self._cfg_detectar_certs).pack(side="left")
+            btn_plano(fila_cert, "Importar certificado…", self._cfg_importar_cert).pack(side="left", padx=(8, 0))
+            btn_plano(fila_cert, "Eliminar", self._cfg_eliminar_cert, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
+            btn_plano(fila_cert, "Desbloquear con PUK", self._cfg_desbloquear_puk, fg=UI["warn_fg"]).pack(side="left", padx=(8, 0))
             tb.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
-                       bootstyle="primary").pack(side="right")
+                       bootstyle="dark").pack(side="right")
             self._cfg_certs_data = []
 
             # --- imagen por tipo ----------------------------------------------
@@ -3073,10 +3065,7 @@ def gui_main(pdf_path=None, tipo=None):
             self.cfg_img_lbl = tk.Label(fila_img, text="(imagen por defecto)", bg=UI["surface"],
                                         fg=UI["muted"], font=UI["mono"])
             self.cfg_img_lbl.pack(side="left")
-            tk.Button(fila_img, text="Elegir imagen…", command=self._cfg_elegir_imagen,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="right")
+            btn_plano(fila_img, "Elegir imagen…", self._cfg_elegir_imagen).pack(side="right")
             # vista previa: sobre tablero gris con borde, la imagen de firma es
             # casi blanca y sobre fondo blanco no se distinguía nada.
             marco_prev = tk.Frame(f_img, bg=UI["border"], highlightbackground=UI["border"],
@@ -3099,7 +3088,7 @@ def gui_main(pdf_path=None, tipo=None):
             tk.Label(fila_pos, text="(izquierda / derecha / encima / debajo del texto)",
                      bg=UI["surface"], fg=UI["muted"], font=UI["ui"]).pack(side="left", padx=(6, 0))
             tb.Button(fila_pos, text="Aplicar", command=self._cfg_aplicar_imagen,
-                       bootstyle="primary").pack(side="right")
+                       bootstyle="dark").pack(side="right")
 
             # vista previa de la firma completa (imagen + texto) como saldrá
             tk.Label(f_img, text="Así se verá la firma:", bg=UI["surface"],
@@ -3132,7 +3121,7 @@ def gui_main(pdf_path=None, tipo=None):
                            command=self._cfg_guardar_tsl).pack(anchor="w", padx=12, pady=10)
 
             tb.Button(body, text="Cerrar", command=win.destroy,
-                       bootstyle="primary").pack(pady=(4, 0))
+                       bootstyle="dark").pack(pady=(4, 0))
 
             # cargar apariencia al final (ya existen cfg_pos_lbl y cfg_img_lbl)
             self._cfg_cargar_apariencia()
@@ -3454,14 +3443,8 @@ def gui_main(pdf_path=None, tipo=None):
             lista.pack(fill="both", expand=True, padx=12, pady=(0, 6))
             fila_lista = tk.Frame(f_lista, bg=UI["surface"])
             fila_lista.pack(fill="x", padx=12, pady=(0, 10))
-            tk.Button(fila_lista, text="Agregar PDFs…", command=lambda: _agregar(),
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="left")
-            tk.Button(fila_lista, text="Quitar seleccionados", command=lambda: _quitar(),
-                      bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
+            btn_plano(fila_lista, "Agregar PDFs…", _agregar).pack(side="left")
+            btn_plano(fila_lista, "Quitar seleccionados", _quitar, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
             self._masiva_pdfs = []
 
             def _agregar():
@@ -3553,12 +3536,9 @@ def gui_main(pdf_path=None, tipo=None):
 
             fila_btn = tk.Frame(win, bg=UI["bg"])
             fila_btn.pack(fill="x", padx=16, pady=(0, 16))
-            tk.Button(fila_btn, text="Cancelar", command=win.destroy,
-                      bg=UI["surface"], fg=UI["ink"], relief="flat",
-                      highlightbackground=UI["border"], highlightthickness=1,
-                      font=UI["ui"], padx=12, pady=4).pack(side="right")
+            btn_plano(fila_btn, "Cancelar", win.destroy).pack(side="right")
             tb.Button(fila_btn, text="Firmar", command=_firmar,
-                       bootstyle="primary").pack(side="right", padx=(0, 8))
+                       bootstyle="dark").pack(side="right", padx=(0, 8))
 
         # --- tipo / imagen -----------------------------------------------------
         def _set_tipo(self, _nombre_mostrado):
