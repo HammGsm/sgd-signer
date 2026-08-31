@@ -2279,7 +2279,19 @@ def dispatch_gui_op(req, ctx):
 def daemon_loop(url):
     """Daemon: procesa la URL inicial (si hay) y espera más URLs por el socket local."""
     import threading
-    ctx = {"urlBase": "", "rutaPri": "", "cfg": load_config(), "ws_url": None}
+    cfg = load_config()
+    # limpieza de huérfanos: cert_pins de archivos ya borrados (p.ej. un
+    # certificado eliminado con ELIMINAR_CERT o a mano) no deben quedar en config
+    pins = cfg.get("cert_pins") or {}
+    huerfanos = [p for p in pins if not Path(p).exists()]
+    if huerfanos:
+        for p in huerfanos:
+            pins.pop(p, None)
+        if not pins:
+            cfg.pop("cert_pins", None)
+        save_config(cfg)
+        log(f"limpieza: cert_pins huérfanos eliminados ({len(huerfanos)})")
+    ctx = {"urlBase": "", "rutaPri": "", "cfg": cfg, "ws_url": None}
     ws_thread = None
 
     def start_session(u):
@@ -3202,6 +3214,8 @@ def gui_main(pdf_path=None, tipo=None):
                 lambda _e: self._cfg_mostrar_detalle_cert(
                     self.cfg_cert_lista.curselection()[0]
                     if self.cfg_cert_lista.curselection() else 0))
+            # doble-click = elegir y guardar (mismo flujo que 'Usar este certificado')
+            self.cfg_cert_lista.bind("<Double-Button-1>", lambda _e: self._cfg_usar_cert())
 
         def _cfg_mostrar_detalle_cert(self, idx):
             if not (0 <= idx < len(self._cfg_certs_data)):
