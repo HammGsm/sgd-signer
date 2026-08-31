@@ -1008,8 +1008,11 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     subj = signer.signing_cert.subject.native
     cn = subj.get("common_name", "Firmante")
 
-    # tamaño de página (puntos) para posiciones relativas
-    r = PdfFileReader(open(pdf_path, "rb"))
+    # tamaño de página (puntos) para posiciones relativas.
+    # strict=False: PDFs con hybrid xref (ciertos generadores) bloquean la firma
+    # con "Attempting to sign document with hybrid cross-reference sections while
+    # hybrid xrefs are disabled" si el reader es estricto (pyhanko pdf_signer.py).
+    r = PdfFileReader(open(pdf_path, "rb"), strict=False)
 
     def page_obj(reader, n):
         """Navega el árbol /Pages y devuelve el objeto de la página n (1-based)."""
@@ -1173,8 +1176,9 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
         stamp_style=style,
     )
 
-    # campo de firma visible
-    w = IncrementalPdfFileWriter(open(pdf_path, "rb"))
+    # campo de firma visible. El writer recibe el reader no-estricto como 'prev'
+    # para que el check de hybrid xrefs (pdf_signer.py) no bloquee la firma.
+    w = IncrementalPdfFileWriter(open(pdf_path, "rb"), prev=r, strict=False)
     fields.append_signature_field(
         w, fields.SigFieldSpec(campo_num, on_page=pagina - 1, box=box)
     )
