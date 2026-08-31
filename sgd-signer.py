@@ -2461,18 +2461,28 @@ def _render_pdf_png(pdf_path, pagina, dpi):
 
 # --- paleta warm monochrome (minimalist-ui) ---------------------------------
 UI = {
-    # macOS 26 "Liquid Glass" — paleta Apple, translúcida y luminosa.
-    # Tkinter no tiene blur/glass real, así que se simula con superficies
-    # claras, bordes suaves y acento azul Apple. Compatible Linux/Windows.
-    "bg": "#F5F5F7", "surface": "#FFFFFF", "border": "#D2D2D7",
-    "ink": "#1D1D1F", "muted": "#86868B",
-    "accent": "#007AFF", "accent_hover": "#0060DF",   # azul Apple (botones primarios)
-    "accent_bg": "#E8F0FE", "accent_fg": "#007AFF",   # azul claro (estado OK)
-    "warn_bg": "#FFF3CD", "warn_fg": "#B25000",       # ámbar (aviso / sin PIN)
-    "danger_bg": "#FFE5E5", "danger_fg": "#D70015",   # rojo Apple (error)
+    # Premium Utilitarian Minimalism: bone canvas, 1px borders, pastel accents.
+    # Color es recurso escaso: solo semántico (OK/aviso/error). CTA sólido oscuro.
+    "bg": "#F7F6F3", "surface": "#FFFFFF", "border": "#EAEAEA",
+    "ink": "#2F3437", "muted": "#787774",
+    "accent": "#111111", "accent_hover": "#333333",   # CTA sólido oscuro (skill)
+    "accent_bg": "#EDF3EC", "accent_fg": "#346538",   # verde pastel (OK)
+    "warn_bg": "#FBF3DB", "warn_fg": "#956400",       # amarillo pastel (aviso)
+    "danger_bg": "#FDEBEC", "danger_fg": "#9F2F2D",   # rojo pastel (error)
+    "info_bg": "#E1F3FE", "info_fg": "#1F6C9F",       # azul pastel (info)
     "mono": ("SF Mono", 9), "mono_b": ("SF Mono", 9, "bold"),
     "ui": ("Helvetica Neue", 10), "ui_b": ("Helvetica Neue", 10, "bold"),
 }
+
+
+def _hover(btn, bg, fg, bg_h=None, fg_h=None):
+    """Micro-interacción: cambio sutil de color al pasar el ratón (200ms
+    visual — tkinter no anima, el cambio es instantáneo pero discreto)."""
+    bg_h = bg_h or UI["border"]
+    fg_h = fg_h or fg
+    btn.bind("<Enter>", lambda _e: btn.config(bg=bg_h, fg=fg_h))
+    btn.bind("<Leave>", lambda _e: btn.config(bg=bg, fg=fg))
+    return btn
 NOMBRES_TIPO = {"1": "1 · Titular", "2": "2 · Básica", "3": "3 · V°B°",
                 "4": "4 · Avanzada", "5": "5 · V°B° avanzada", "6": "6 · Recepción",
                 "7": "7 · Encargo"}
@@ -2563,70 +2573,88 @@ def gui_main(pdf_path=None, tipo=None):
             style = ttk.Style()
             style.configure("TFrame", background=UI["bg"])
 
-            # --- barra PIN (arriba de todo: siempre visible el estado) ------
-            # Liquid Glass: superficie translúcida con borde superior brillante
-            # (luz entrando al material), como las barras de macOS 26.
+            # --- barra superior: certificado + acciones ----------------------
+            # Grid ponderado: columna 0 (estado) expande, columna 1 (botones)
+            # se compacta — no se desborda en pantallas pequeñas.
             pin_bar = tk.Frame(root, bg=UI["surface"], highlightbackground=UI["border"],
                                 highlightthickness=1)
             pin_bar.pack(fill="x", padx=12, pady=(12, 6))
-            tk.Label(pin_bar, text="Certificado", bg=UI["surface"], fg=UI["ink"],
-                     font=UI["ui_b"]).pack(side="left", padx=(10, 8), pady=8)
-            self.pin_pill = pill(pin_bar, "…", UI["warn_bg"], UI["warn_fg"])
-            self.pin_pill.pack(side="left", pady=8)
-            self.venc_pill = pill(pin_bar, "", UI["accent_bg"], UI["accent_fg"])
-            self.venc_pill.pack(side="left", padx=(8, 0), pady=8)
-            tb.Button(pin_bar, text="🔔", command=self.abrir_notificaciones,
-                      bootstyle="light", width=3).pack(side="right", padx=6, pady=6)
-            tb.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
-                      bootstyle="primary").pack(side="right", padx=10, pady=6)
-            tb.Button(pin_bar, text="⚙ Configuración", command=self.abrir_configuracion,
-                      bootstyle="light").pack(side="right", padx=6, pady=6)
-            tb.Button(pin_bar, text="✓ Doctor", command=self.abrir_doctor,
-                      bootstyle="light").pack(side="right", padx=6, pady=6)
+            pin_bar.columnconfigure(0, weight=1)
+            pin_bar.columnconfigure(1, weight=0)
+            f_estado = tk.Frame(pin_bar, bg=UI["surface"])
+            f_estado.grid(row=0, column=0, sticky="w", padx=(10, 8), pady=8)
+            tk.Label(f_estado, text="Certificado", bg=UI["surface"], fg=UI["ink"],
+                     font=UI["ui_b"]).pack(side="left")
+            self.pin_pill = pill(f_estado, "…", UI["warn_bg"], UI["warn_fg"])
+            self.pin_pill.pack(side="left", padx=(8, 0))
+            self.venc_pill = pill(f_estado, "", UI["accent_bg"], UI["accent_fg"])
+            self.venc_pill.pack(side="left", padx=(8, 0))
+            f_acciones = tk.Frame(pin_bar, bg=UI["surface"])
+            f_acciones.grid(row=0, column=1, sticky="e", padx=(0, 10), pady=6)
+            tb.Button(f_acciones, text="🔔", command=self.abrir_notificaciones,
+                      bootstyle="light", width=3).pack(side="right", padx=(4, 0))
+            tb.Button(f_acciones, text="PIN", command=self.pedir_pin,
+                      bootstyle="light").pack(side="right", padx=(4, 0))
+            tb.Button(f_acciones, text="Config", command=self.abrir_configuracion,
+                      bootstyle="light").pack(side="right", padx=(4, 0))
+            tb.Button(f_acciones, text="Doctor", command=self.abrir_doctor,
+                      bootstyle="light").pack(side="right", padx=(4, 0))
             self._refrescar_estado_pin()
             self._refrescar_vencimiento()
 
             # --- barra archivo/tipo ------------------------------------------
             top = tk.Frame(root, bg=UI["bg"])
             top.pack(fill="x", padx=12, pady=(0, 6))
-            tb.Button(top, text="📂 Abrir PDF", command=self.abrir,
-                      bootstyle="primary").pack(side="left")
+            top.columnconfigure(0, weight=0)
+            top.columnconfigure(1, weight=1)
+            top.columnconfigure(2, weight=0)
+            tb.Button(top, text="Abrir PDF", command=self.abrir,
+                      bootstyle="primary").grid(row=0, column=0, sticky="w")
             self.lbl_archivo = tk.Label(top, text="(sin archivo)", bg=UI["bg"],
                                         fg=UI["muted"], font=UI["ui"])
-            self.lbl_archivo.pack(side="left", padx=10)
-
-            tk.Label(top, text="Tipo de firma", bg=UI["bg"], fg=UI["muted"],
-                     font=UI["ui"]).pack(side="left", padx=(20, 6))
+            self.lbl_archivo.grid(row=0, column=1, sticky="w", padx=10)
+            f_tipo = tk.Frame(top, bg=UI["bg"])
+            f_tipo.grid(row=0, column=2, sticky="e")
+            tk.Label(f_tipo, text="Tipo", bg=UI["bg"], fg=UI["muted"],
+                     font=UI["ui"]).pack(side="left", padx=(0, 6))
             self.tipo = tk.StringVar(value="2")
-            om = tk.OptionMenu(top, self.tipo, *[NOMBRES_TIPO[t] for t in sorted(TIPOS)],
+            om = tk.OptionMenu(f_tipo, self.tipo, *[NOMBRES_TIPO[t] for t in sorted(TIPOS)],
                                 command=self._set_tipo)
             om.config(bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1, font=UI["ui"])
             om.pack(side="left")
 
-            # --- barra navegación/posición -----------------------------------
+            # --- barra navegación/posición + zoom (una sola fila) ------------
             nav = tk.Frame(root, bg=UI["bg"])
             nav.pack(fill="x", padx=12, pady=(0, 6))
-            tb.Button(nav, text="‹ Pág", command=lambda: self.cambiar_pagina(-1),
-                      bootstyle="light").pack(side="left")
-            self.lbl_pagina = tk.Label(nav, text="- / -", bg=UI["bg"], fg=UI["ink"], font=UI["mono"])
-            self.lbl_pagina.pack(side="left", padx=8)
-            tb.Button(nav, text="Pág ›", command=lambda: self.cambiar_pagina(1),
-                      bootstyle="light").pack(side="left")
-            self.lbl_pos = tk.Label(nav, text="Click en la página para fijar posición (se recuerda por tipo)",
-                                     bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
-            self.lbl_pos.pack(side="left", padx=16)
-
-            # --- controles de zoom (a la derecha de la barra de navegación) ---
-            def btn_zoom(txt, cmd, w=3):
-                return tb.Button(nav, text=txt, command=cmd, bootstyle="light")
-            btn_zoom("Ancho", self.zoom_ancho, 6).pack(side="right", padx=(4, 0))
-            btn_zoom("Ajustar", self.zoom_ajustar, 7).pack(side="right", padx=4)
-            btn_zoom("+", lambda: self.zoom_paso(1.25)).pack(side="right")
-            self.lbl_zoom = tk.Label(nav, text="100%", bg=UI["bg"], fg=UI["ink"],
-                                      font=UI["mono"], width=5)
-            self.lbl_zoom.pack(side="right", padx=2)
-            btn_zoom("−", lambda: self.zoom_paso(0.8)).pack(side="right")
+            nav.columnconfigure(0, weight=0)
+            nav.columnconfigure(1, weight=1)
+            nav.columnconfigure(2, weight=0)
+            f_nav = tk.Frame(nav, bg=UI["bg"])
+            f_nav.grid(row=0, column=0, sticky="w")
+            tb.Button(f_nav, text="‹", command=lambda: self.cambiar_pagina(-1),
+                      bootstyle="light", width=2).pack(side="left")
+            self.lbl_pagina = tk.Label(f_nav, text="- / -", bg=UI["bg"], fg=UI["ink"],
+                                       font=UI["mono"])
+            self.lbl_pagina.pack(side="left", padx=6)
+            tb.Button(f_nav, text="›", command=lambda: self.cambiar_pagina(1),
+                      bootstyle="light", width=2).pack(side="left")
+            self.lbl_pos = tk.Label(nav, text="Click en la página para fijar posición",
+                                    bg=UI["bg"], fg=UI["muted"], font=UI["ui"])
+            self.lbl_pos.grid(row=0, column=1, sticky="w", padx=12)
+            f_zoom = tk.Frame(nav, bg=UI["bg"])
+            f_zoom.grid(row=0, column=2, sticky="e")
+            tb.Button(f_zoom, text="−", command=lambda: self.zoom_paso(0.8),
+                      bootstyle="light", width=2).pack(side="left")
+            self.lbl_zoom = tk.Label(f_zoom, text="100%", bg=UI["bg"], fg=UI["ink"],
+                                     font=UI["mono"], width=5)
+            self.lbl_zoom.pack(side="left")
+            tb.Button(f_zoom, text="+", command=lambda: self.zoom_paso(1.25),
+                      bootstyle="light", width=2).pack(side="left")
+            tb.Button(f_zoom, text="Ajustar", command=self.zoom_ajustar,
+                      bootstyle="light").pack(side="left", padx=(4, 0))
+            tb.Button(f_zoom, text="Ancho", command=self.zoom_ancho,
+                      bootstyle="light").pack(side="left", padx=(4, 0))
 
             # --- visor: canvas con scrollbars (el PDF puede exceder la ventana) --
             visor = tk.Frame(root, bg=UI["border"], highlightbackground=UI["border"],
@@ -2661,13 +2689,16 @@ def gui_main(pdf_path=None, tipo=None):
             # --- barra inferior: firmar + estado ------------------------------
             bottom = tk.Frame(root, bg=UI["bg"])
             bottom.pack(fill="x", padx=12, pady=(0, 12))
-            self.btn_firmar = tb.Button(bottom, text="✍ Firmar", command=self.firmar,
+            bottom.columnconfigure(0, weight=0)
+            bottom.columnconfigure(1, weight=1)
+            bottom.columnconfigure(2, weight=0)
+            self.btn_firmar = tb.Button(bottom, text="Firmar", command=self.firmar,
                                          state="disabled", bootstyle="primary")
-            self.btn_firmar.pack(side="left")
-            tb.Button(bottom, text="⧉ Firma masiva…", command=self.firma_masiva,
-                      bootstyle="light").pack(side="left", padx=(8, 0))
+            self.btn_firmar.grid(row=0, column=0, sticky="w")
+            tb.Button(bottom, text="Firma masiva…", command=self.firma_masiva,
+                      bootstyle="light").grid(row=0, column=2, sticky="e")
             self.lbl_status = tk.Label(bottom, text="", bg=UI["bg"], fg=UI["muted"], font=UI["mono"])
-            self.lbl_status.pack(side="left", padx=10)
+            self.lbl_status.grid(row=0, column=1, sticky="w", padx=10)
 
             if pdf_path:
                 self.cargar(pdf_path)
@@ -3741,12 +3772,10 @@ def gui_main(pdf_path=None, tipo=None):
 
     root = tb.Window(themename="litera")
     root.title("SGD-SIGNER — Firma digital")
-    # Responsive: el layout usa pack con expand=True en el visor, así que la
-    # ventana se adapta al redimensionar. Solo fijamos un tamaño inicial
-    # razonable; el visor absorbe el espacio sobrante y las barras (PIN,
-    # archivo, navegación, firmar) quedan siempre visibles.
-    root.geometry("760x760")
-    root.minsize(560, 480)
+    # Responsive: grid ponderado en las barras (estado expande, acciones se
+    # compactan) + visor con expand=True — todo visible sin estirar la ventana.
+    root.geometry("720x640")
+    root.minsize(480, 420)
     root.configure(bg=UI["bg"])
     # icono de la ventana (assets/icon.png); si no existe, se omite sin romper
     try:
