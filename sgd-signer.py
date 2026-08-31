@@ -290,6 +290,24 @@ def _cert_info(der):
     }
 
 
+def _cert_info_pkcs12(path, pin=None):
+    """Lee (CN, org, emisor, no_after) de un .p12/.pfx. El contenedor está
+    cifrado: sin PIN devuelve solo el nombre del archivo; con PIN incorrecto
+    lanza (el llamador lo captura y marca el archivo como ilegible)."""
+    from pyhanko.sign import signers
+    if not pin:
+        return {"cn": Path(path).name, "org": "", "emisor": "", "no_after": None}
+    s = signers.SimpleSigner.load_pkcs12(str(path), passphrase=pin.encode())
+    c = s.signing_cert
+    subj = c.subject.native
+    return {
+        "cn": subj.get("common_name", Path(path).name),
+        "org": subj.get("organization_name", ""),
+        "emisor": c.issuer.native.get("common_name", ""),
+        "no_after": c.not_valid_after,
+    }
+
+
 def _certs_de_sesion(sess, base, pin_ok=True):
     """Extrae los certificados de firma (con clave privada) de una sesión abierta.
 
@@ -782,17 +800,26 @@ def _instalar_deps():
         return ("Dependencias Python", False, str(e))
 
 
-def make_signer(cfg, pin):
-    """Construye el firmante: PKCS#11 (token USB) si cfg['token'], si no .p12.
+def make_signer(cfg, pin, cert_path=None):
+    """Construye el firmante: .p12/.pfx elegido (importado o --cert) o PKCS#11.
 
-    Usa el certificado elegido en cfg['cert_key_id'] + cfg['token_lib'] si existe;
-    si no, auto-detecta el primero con clave privada (los certs CA no la tienen).
+    Prioridad: archivo elegido (cfg['cert'] o cert_path) > token USB. Si no hay
+    archivo, usa el certificado elegido en cfg['cert_key_id'] + cfg['token_lib']
+    si existe; si no, auto-detecta el primero con clave privada (los certs CA
+    no la tienen).
 
     La sesión PKCS#11 se cachea a nivel de proceso (daemon vive todo el día,
     firma muchas veces): abrir una sesión nueva por cada firma sin cerrar la
     anterior agota los slots de login del token y el 2do+ intento revienta
     con UserAlreadyLoggedIn. Root cause fix, no parche por caller.
     """
+    # archivo .p12/.pfx explícito (--cert o importado en la GUI): prioridad
+    cert_path = cert_path or cfg.get("cert")
+    if cert_path and Path(cert_path).exists():
+        from pyhanko.sign import signers
+        if cert_path.lower().endswith((".p12", ".pfx")):
+            return signers.SimpleSigner.load_pkcs12(cert_path, passphrase=pin.encode())
+        return signers.SimpleSigner.load(cert_path, passphrase=pin.encode())
     # Auto-detectar el módulo PKCS#11 si hay un token conectado, aunque el
     # usuario no haya elegido certificado antes (SET_PIN valida el PIN contra
     # el token). Evita caer a la rama .p12 -> pick_cert() -> input() en el
@@ -861,13 +888,6 @@ def make_signer(cfg, pin):
             except Exception:
                 continue
         raise SystemExit("No se encontró certificado de firma en el token")
-    cert_path = cfg.get("cert")
-    if not cert_path:
-        cert_path = pick_cert(cfg)
-    from pyhanko.sign import signers
-    if cert_path.lower().endswith((".p12", ".pfx")):
-        return signers.SimpleSigner.load_pkcs12(cert_path, passphrase=pin.encode())
-    return signers.SimpleSigner.load(cert_path, passphrase=pin.encode())
 
 
 # en binario PyInstaller los assets viven en sys._MEIPASS, no junto al .py
@@ -938,7 +958,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     extra = extra or {}
     cfg = cfg or {}
 
-    signer = make_signer(cfg, pin)
+    signer = make_signer(cfg, pin, cert_path)
     subj = signer.signing_cert.subject.native
     cn = subj.get("common_name", "Firmante")
 
@@ -1119,9 +1139,9 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     return out_path
 
 
-def check_tsl(cfg, pin):
+def check_tsl(cfg, pin, cert_path=None):
     """Verifica que el certificado esté en la TSL de INDECOPI (como el original)."""
-    signer = make_signer(cfg, pin)
+    signer = make_signer(cfg, pin, cert_path)
     digest = hashlib.sha256(signer.signing_cert.dump()).hexdigest().upper()
     try:
         req = urllib.request.Request(TSL_URL, headers={"User-Agent": "sgd-signer"})
@@ -1832,6 +1852,14 @@ def elegir_cert_via_daemon(key_id, lib, serial_token=None):
                     "serial_token": serial_token})
 
 
+def elegir_archivo_cert_via_daemon(archivo):
+    call_daemon_op({"op": "ELEGIR_CERT", "archivo": archivo})
+
+
+def importar_cert_via_daemon(archivo):
+    return call_daemon_op({"op": "IMPORTAR_CERT", "archivo": archivo})["archivo"]
+
+
 def dispatch_gui_op(req, ctx):
     """Verbos del protocolo local de la GUI (F8), todos sobre el socket del daemon
     porque solo el daemon root ve el token/PIN real."""
@@ -1915,6 +1943,29 @@ def dispatch_gui_op(req, ctx):
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         elegido = cfg.get("cert_key_id")
         salida = []
+        # 1) archivos .p12/.pfx importados (o en cwd): no requieren token
+        for p in find_certs():
+            try:
+                info = _cert_info_pkcs12(p, pin)
+            except Exception as e:
+                if pin and isinstance(e, (AttributeError, ValueError)):
+                    info = {"cn": p.name, "org": "", "emisor": "", "no_after": None,
+                            "aviso_import": "PIN incorrecto o archivo corrupto"}
+                else:
+                    info = {"cn": p.name, "org": "", "emisor": "", "no_after": None,
+                            "aviso_import": f"no se pudo leer: {e}"}
+            activo = cfg.get("cert") == str(p)
+            ok, msgs = validar_certificado({**info, "listo": True})
+            if info.get("aviso_import"):
+                msgs = msgs + [info["aviso_import"]]
+            salida.append({
+                "cn": info.get("cn", p.name), "org": info.get("org", ""),
+                "emisor": info.get("emisor", ""), "token": "archivo importado",
+                "lib": "", "serial_token": "", "key_id": None,
+                "archivo": str(p), "listo": True, "ok": ok, "avisos": msgs,
+                "activo": activo,
+            })
+        # 2) tokens PKCS#11
         for c in certs:
             ok, msgs = validar_certificado(c)
             salida.append({
@@ -1928,11 +1979,20 @@ def dispatch_gui_op(req, ctx):
         return {"ok": True, "certs": salida}
 
     if op == "ELEGIR_CERT":
+        if req.get("archivo"):
+            # certificado importado (.p12/.pfx): el archivo manda sobre el token
+            cfg["cert"] = req["archivo"]
+            cfg.pop("cert_key_id", None)
+            cfg.pop("token_lib", None)
+            cfg.pop("cert_token_serial", None)
+            save_config(cfg)
+            return {"ok": True}
         cfg["cert_key_id"] = req["key_id"]
         cfg["token_lib"] = req["lib"]
         # root cause: sin esto, make_signer cae a la rama .p12 -> pick_cert()
         # -> input() en el daemon sin stdin -> EOFError al guardar el PIN.
         cfg["token"] = True
+        cfg.pop("cert", None)  # elegir token desactiva el archivo importado
         if req.get("serial_token"):
             cfg["cert_token_serial"] = req["serial_token"]
         save_config(cfg)
@@ -1945,6 +2005,26 @@ def dispatch_gui_op(req, ctx):
                     pass
                 _PKCS11_SESSION_CACHE["session"] = None
         return {"ok": True}
+
+    if op == "IMPORTAR_CERT":
+        # copia el .p12/.pfx elegido a ~/.sgd-signer/certs/ y lo activa
+        src = Path(req["archivo"])
+        if not src.exists():
+            return {"ok": False, "error": f"no existe: {src}"}
+        if not src.suffix.lower() in (".p12", ".pfx"):
+            return {"ok": False, "error": "solo se admiten .p12/.pfx"}
+        CERT_DIR.mkdir(parents=True, exist_ok=True)
+        dst = CERT_DIR / src.name
+        if dst.exists() and dst.resolve() != src.resolve():
+            dst = CERT_DIR / (src.stem + "-" + hashlib.sha1(str(src).encode()).hexdigest()[:6] + src.suffix)
+        shutil.copy2(src, dst)
+        os.chmod(dst, 0o600)
+        cfg["cert"] = str(dst)
+        cfg.pop("cert_key_id", None)
+        cfg.pop("token_lib", None)
+        cfg.pop("cert_token_serial", None)
+        save_config(cfg)
+        return {"ok": True, "archivo": str(dst)}
 
     if op == "SET_APARIENCIA":
         tipo = req["tipo"]
@@ -2110,10 +2190,10 @@ def daemon_loop(url):
 def cmd_sign(args):
     cfg = load_config()
     pin = get_pin(cfg)
-    if not args.no_tsl and cfg.get("tsl_check", True) and not check_tsl(cfg, pin):
+    if not args.no_tsl and cfg.get("tsl_check", True) and not check_tsl(cfg, pin, args.cert):
         raise SystemExit("Certificado no está en la TSL de INDECOPI (usa --no-tsl para saltar)")
     pos = tuple(map(int, args.pos.split(","))) if args.pos else None
-    out = sign_pdf(args.pdf, args.tipo, None, pin, pos=pos, pagina=args.pagina, cfg=cfg)
+    out = sign_pdf(args.pdf, args.tipo, args.cert, pin, pos=pos, pagina=args.pagina, cfg=cfg)
     print(f"Firmado: {out}")
 
 
@@ -2613,6 +2693,10 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["ink"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="left")
+            tk.Button(fila_cert, text="Importar certificado…", command=self._cfg_importar_cert,
+                      bg=UI["surface"], fg=UI["ink"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
             tb.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
                        bootstyle="primary").pack(side="right")
             self._cfg_certs_data = []
@@ -2748,13 +2832,15 @@ def gui_main(pdf_path=None, tipo=None):
             self._cfg_certs_data = certs
             if not certs:
                 self.cfg_cert_detalle.config(
-                    text="No se detectaron certificados. Conecta el token/smartcard y guarda el PIN.")
+                    text="No se detectaron certificados. Conecta el token/smartcard, "
+                         "importa un .p12/.pfx o guarda el PIN.")
                 return
             sel = 0
             for i, c in enumerate(certs):
                 marca = "✓ " if c.get("activo") else "  "
                 estado = "" if c.get("ok") else "  [REVISAR]"
-                self.cfg_cert_lista.insert("end", f"{marca}{c['cn']} — {c['token']}{estado}")
+                origen = c.get("archivo") and "archivo" or c.get("token", "?")
+                self.cfg_cert_lista.insert("end", f"{marca}{c['cn']} — {origen}{estado}")
                 if c.get("activo"):
                     sel = i
             self.cfg_cert_lista.selection_set(sel)
@@ -2773,7 +2859,10 @@ def gui_main(pdf_path=None, tipo=None):
             if c.get("org"):
                 lineas.append(c["org"])
             lineas += c.get("avisos", [])
-            lineas.append(f"Dispositivo: {c.get('token','?')} (serie {c.get('serial_token','?')})")
+            if c.get("archivo"):
+                lineas.append(f"Archivo: {c['archivo']}")
+            else:
+                lineas.append(f"Dispositivo: {c.get('token','?')} (serie {c.get('serial_token','?')})")
             estado = "Listo para firmar" if c.get("ok") else "No utilizable"
             self.cfg_cert_detalle.config(
                 text=f"{estado}\n" + "\n".join(lineas),
@@ -2785,6 +2874,16 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showinfo("Certificado", "Primero pulsa 'Detectar certificados' y elige uno.")
                 return
             c = self._cfg_certs_data[sel[0]]
+            if c.get("archivo"):
+                # certificado importado: no requiere token ni PIN para elegirlo
+                try:
+                    elegir_archivo_cert_via_daemon(c["archivo"])
+                except Exception as e:
+                    messagebox.showerror("Error", f"No se pudo guardar la elección: {e}")
+                    return
+                messagebox.showinfo("Certificado", f"Se firmará con:\n{c['cn']}\n({c['archivo']})")
+                self._cfg_detectar_certs()
+                return
             if not c.get("key_id"):
                 messagebox.showwarning("Certificado", "Ese dispositivo no expone un certificado utilizable.")
                 return
@@ -2798,6 +2897,23 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showerror("Error", f"No se pudo guardar la elección: {e}")
                 return
             messagebox.showinfo("Certificado", f"Se firmará con:\n{c['cn']}\n({c['token']})")
+            self._cfg_detectar_certs()
+
+        def _cfg_importar_cert(self):
+            """Importa un .p12/.pfx a ~/.sgd-signer/certs/ y lo activa."""
+            archivo = filedialog.askopenfilename(
+                title="Importar certificado (.p12/.pfx)",
+                filetypes=[("Certificado PKCS#12", "*.p12 *.pfx"), ("Todos", "*.*")])
+            if not archivo:
+                return
+            try:
+                dst = importar_cert_via_daemon(archivo)
+            except Exception as e:
+                messagebox.showerror("Importar certificado", f"No se pudo importar: {e}")
+                return
+            messagebox.showinfo("Importar certificado",
+                                f"Certificado importado y activado:\n{dst}\n\n"
+                                "Guarda el PIN (botón 'Ingresar / cambiar PIN') para firmar sin que lo pida cada vez.")
             self._cfg_detectar_certs()
 
         def _cfg_render_firma(self):
