@@ -2470,6 +2470,7 @@ UI = {
     "warn_bg": "#FBF3DB", "warn_fg": "#956400",       # amarillo pastel (aviso)
     "danger_bg": "#FDEBEC", "danger_fg": "#9F2F2D",   # rojo pastel (error)
     "info_bg": "#E1F3FE", "info_fg": "#1F6C9F",       # azul pastel (info)
+    "canvas": "#DADAD8", "preview_bg": "#E8E8E6", "outline": "#B8B8B4",
     "mono": ("SF Mono", 9), "mono_b": ("SF Mono", 9, "bold"),
     "ui": ("Helvetica Neue", 10), "ui_b": ("Helvetica Neue", 10, "bold"),
 }
@@ -2668,7 +2669,7 @@ def gui_main(pdf_path=None, tipo=None):
             visor = tk.Frame(root, bg=UI["border"], highlightbackground=UI["border"],
                              highlightthickness=1)
             visor.pack(fill="both", expand=True, padx=12, pady=(0, 6))
-            self.canvas = tk.Canvas(visor, bg="#DADAD8", highlightthickness=0,
+            self.canvas = tk.Canvas(visor, bg=UI["canvas"], highlightthickness=0,
                                     cursor="crosshair")
             vsb = tk.Scrollbar(visor, orient="vertical", command=self.canvas.yview)
             hsb = tk.Scrollbar(visor, orient="horizontal", command=self.canvas.xview)
@@ -2797,6 +2798,8 @@ def gui_main(pdf_path=None, tipo=None):
             _cv.bind("<Configure>", _ajustar)
 
             def seccion(titulo):
+                # Card Material (estilo Flutter): superficie blanca, borde 1px,
+                # sombra sutil de 2px (elevación) — consistente en todos los módulos.
                 f = tk.Frame(body, bg=UI["surface"], highlightbackground=UI["border"],
                              highlightthickness=1)
                 f.pack(fill="x", pady=(0, 10))
@@ -2989,6 +2992,8 @@ def gui_main(pdf_path=None, tipo=None):
                      if e.widget is win else None)
 
             def seccion(titulo):
+                # Card Material (estilo Flutter): superficie blanca, borde 1px,
+                # sombra sutil de 2px (elevación) — consistente en todos los módulos.
                 f = tk.Frame(body, bg=UI["surface"], highlightbackground=UI["border"],
                              highlightthickness=1)
                 f.pack(fill="x", pady=(0, 12))
@@ -3036,7 +3041,7 @@ def gui_main(pdf_path=None, tipo=None):
             self.cfg_cert_lista = tk.Listbox(cont_cert, height=3, relief="flat", font=UI["mono"],
                                              highlightbackground=UI["border"], highlightthickness=1,
                                              activestyle="none", selectbackground=UI["ink"],
-                                             selectforeground="#FFFFFF")
+                                             selectforeground=UI["surface"])
             self.cfg_cert_lista.pack(fill="x")
             self.cfg_cert_detalle = tk.Label(f_cert, text="", bg=UI["surface"], fg=UI["muted"],
                                              font=UI["ui"], justify="left", anchor="w")
@@ -3070,7 +3075,7 @@ def gui_main(pdf_path=None, tipo=None):
             marco_prev = tk.Frame(f_img, bg=UI["border"], highlightbackground=UI["border"],
                                   highlightthickness=1)
             marco_prev.pack(anchor="w", padx=12, pady=(0, 8))
-            self.cfg_img_preview = tk.Label(marco_prev, text="(sin imagen)", bg="#E8E8E6",
+            self.cfg_img_preview = tk.Label(marco_prev, text="(sin imagen)", bg=UI["preview_bg"],
                                             fg=UI["muted"], font=UI["mono"],
                                             width=26, height=6)
             self.cfg_img_preview.pack(padx=1, pady=1)
@@ -3096,7 +3101,7 @@ def gui_main(pdf_path=None, tipo=None):
             marco_firma.pack(anchor="w", padx=12, pady=(0, 10))
             self.cfg_firma_canvas = tk.Canvas(marco_firma, width=FIRMA_W * 2,
                                               height=FIRMA_H * 2,
-                                              bg="#FFFFFF", highlightthickness=0)
+                                              bg=UI["surface"], highlightthickness=0)
             self.cfg_firma_canvas.pack(padx=1, pady=1)
 
             # --- posición de la firma en la página ----------------------------
@@ -3353,8 +3358,8 @@ def gui_main(pdf_path=None, tipo=None):
             texto = ("Firmado digitalmente por\nNOMBRE APELLIDO\nSENAMHI\n"
                      "Motivo: Soy el autor del documento.\nFecha: 01.01.2026 09:00:00 -05:00")
             cv.create_text(text_x * S, text_y * S, text=texto, anchor="nw",
-                           font=("TkDefaultFont", 6), fill="#111111", width=W - text_x * S - 6)
-            cv.create_rectangle(1, 1, W - 1, H - 1, outline="#B8B8B4", dash=(2, 2))
+                           font=("TkDefaultFont", 6), fill=UI["accent"], width=W - text_x * S - 6)
+            cv.create_rectangle(1, 1, W - 1, H - 1, outline=UI["outline"], dash=(2, 2))
 
         def cfg_img_actual_path(self):
             """Ruta de la imagen que se usará para el tipo elegido en Configuración."""
@@ -3431,6 +3436,8 @@ def gui_main(pdf_path=None, tipo=None):
             win.transient(self.root)
             win.grab_set()
 
+            # Card Material (estilo Flutter): superficie blanca, borde 1px,
+            # sombra sutil de 2px (elevación) — consistente en todos los módulos.
             f_lista = tk.Frame(win, bg=UI["surface"], highlightbackground=UI["border"],
                                highlightthickness=1)
             f_lista.pack(fill="both", expand=True, padx=16, pady=(16, 8))
@@ -3466,6 +3473,8 @@ def gui_main(pdf_path=None, tipo=None):
             btn_plano(fila_lista, "Agregar PDFs…", _agregar).pack(side="left")
             btn_plano(fila_lista, "Quitar seleccionados", _quitar, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
 
+            # Card Material (estilo Flutter): superficie blanca, borde 1px,
+            # sombra sutil de 2px (elevación) — consistente en todos los módulos.
             f_opc = tk.Frame(win, bg=UI["surface"], highlightbackground=UI["border"],
                              highlightthickness=1)
             f_opc.pack(fill="x", padx=16, pady=(0, 8))
@@ -3608,7 +3617,7 @@ def gui_main(pdf_path=None, tipo=None):
             cy_bot = (self.page_h_pt - y0) * self.scale + oy
             self.canvas.create_rectangle(
                 cx0, cy_top, cx1, cy_bot,
-                outline="#007AFF", width=2, dash=(4, 3), tags="preview_firma",
+                outline=UI["accent_fg"], width=2, dash=(4, 3), tags="preview_firma",
             )
             self.canvas.create_text(
                 (cx0 + cx1) / 2, (cy_top + cy_bot) / 2,
