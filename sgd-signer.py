@@ -485,12 +485,11 @@ def _detectar_token_pkcs11():
 def desbloquear_token(puk, nuevo_pin, lib_path=None):
     """Desbloquea un token con PIN bloqueado usando el PUK (SO PIN).
 
-    Abre sesión SO (rw) con el PUK, restablece el PIN de usuario con
-    set_pin y cierra. Devuelve el label del token desbloqueado.
-
-    Semántica de set_pin con sesión SO: old = PIN actual de usuario (algunos
-    tokens aceptan '' para resetear directo; si no, se reintenta con el nuevo
-    PIN como viejo). PUK incorrecto → PinIncorrect (el llamador lo muestra).
+    Abre sesión SO (rw) con el PUK y restablece el PIN de usuario con
+    init_pin (C_InitPIN — la función correcta para PIN bloqueado; C_SetPIN
+    exige conocer el PIN actual y falla con PinIncorrect aunque el PUK sea
+    correcto). Fallback a set_pin para tokens que no soportan init_pin.
+    Devuelve el label del token desbloqueado.
     """
     import pkcs11
     lib_path = lib_path or _detectar_token_pkcs11()
@@ -504,8 +503,9 @@ def desbloquear_token(puk, nuevo_pin, lib_path=None):
     sess = tok.open(rw=True, so_pin=puk)
     try:
         try:
-            sess.set_pin("", nuevo_pin)
+            sess.init_pin(nuevo_pin)
         except Exception:
+            # tokens que no exponen C_InitPIN: set_pin con el nuevo como viejo
             sess.set_pin(nuevo_pin, nuevo_pin)
     finally:
         try:
