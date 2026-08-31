@@ -3234,13 +3234,17 @@ def gui_main(pdf_path=None, tipo=None):
             # --- sello de tiempo (TSA) ----------------------------------------
             f_tsa = seccion("Sello de tiempo (TSA)")
             tk.Label(f_tsa, text="Añade sello RFC 3161 a las firmas (PAdES B-T).\n"
-                                 "Ej. Camerfirma: https://tsuq.camerfirma.com/cmf/tsa",
+                                 "Preconfigurado con FreeTSA (gratuita, sin credenciales).",
                      bg=UI["surface"], fg=UI["muted"], font=UI["ui"], justify="left").pack(anchor="w", padx=12, pady=(0, 6))
             try:
                 _cfg_tsa = get_config_via_daemon()
             except Exception:
                 _cfg_tsa = {}
-            self.cfg_tsa_url = tk.StringVar(value=_cfg_tsa.get("tsa_url", ""))
+            self.cfg_tsa_on = tk.BooleanVar(value=bool(_cfg_tsa.get("tsa_url")))
+            tk.Checkbutton(f_tsa, text="Habilitar sello de tiempo",
+                           variable=self.cfg_tsa_on, bg=UI["surface"], fg=UI["ink"],
+                           font=UI["ui"], activebackground=UI["surface"]).pack(anchor="w", padx=12, pady=(0, 6))
+            self.cfg_tsa_url = tk.StringVar(value=_cfg_tsa.get("tsa_url") or "https://freetsa.org/tsr")
             self.cfg_tsa_user = tk.StringVar(value=_cfg_tsa.get("tsa_user", ""))
             self.cfg_tsa_pass = tk.StringVar(value=_cfg_tsa.get("tsa_pass", ""))
             self.cfg_tsa_policy = tk.StringVar(value=_cfg_tsa.get("tsa_policy", ""))
@@ -3559,14 +3563,20 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showerror("Error", str(e))
 
         def _cfg_guardar_tsa(self):
-            """Guarda la config de TSA (URL, usuario, password, política)."""
+            """Guarda la config de TSA. Si el checkbox está apagado, se
+            deshabilita (tsa_url vacío = sin sello)."""
             try:
-                set_config_via_daemon({
-                    "tsa_url": self.cfg_tsa_url.get().strip(),
-                    "tsa_user": self.cfg_tsa_user.get().strip(),
-                    "tsa_pass": self.cfg_tsa_pass.get().strip(),
-                    "tsa_policy": self.cfg_tsa_policy.get().strip(),
-                })
+                if self.cfg_tsa_on.get():
+                    set_config_via_daemon({
+                        "tsa_url": self.cfg_tsa_url.get().strip(),
+                        "tsa_user": self.cfg_tsa_user.get().strip(),
+                        "tsa_pass": self.cfg_tsa_pass.get().strip(),
+                        "tsa_policy": self.cfg_tsa_policy.get().strip(),
+                    })
+                else:
+                    set_config_via_daemon({
+                        "tsa_url": "", "tsa_user": "", "tsa_pass": "", "tsa_policy": "",
+                    })
             except Exception as e:
                 messagebox.showerror("Error", str(e))
                 return
