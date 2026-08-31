@@ -482,6 +482,39 @@ def _detectar_token_pkcs11():
     return None
 
 
+def desbloquear_token(puk, nuevo_pin, lib_path=None):
+    """Desbloquea un token con PIN bloqueado usando el PUK (SO PIN).
+
+    Abre sesión SO (rw) con el PUK, restablece el PIN de usuario con
+    set_pin y cierra. Devuelve el label del token desbloqueado.
+
+    Semántica de set_pin con sesión SO: old = PIN actual de usuario (algunos
+    tokens aceptan '' para resetear directo; si no, se reintenta con el nuevo
+    PIN como viejo). PUK incorrecto → PinIncorrect (el llamador lo muestra).
+    """
+    import pkcs11
+    lib_path = lib_path or _detectar_token_pkcs11()
+    if not lib_path:
+        raise RuntimeError("No hay token USB conectado")
+    lib = pkcs11.lib(lib_path)
+    toks = list(lib.get_tokens())
+    if not toks:
+        raise RuntimeError("No hay token USB conectado")
+    tok = toks[0]
+    sess = tok.open(rw=True, so_pin=puk)
+    try:
+        try:
+            sess.set_pin("", nuevo_pin)
+        except Exception:
+            sess.set_pin(nuevo_pin, nuevo_pin)
+    finally:
+        try:
+            sess.close()
+        except Exception:
+            pass
+    return tok.label
+
+
 # --- diagnóstico y auto-instalación (autocontenido, estilo AnyDesk) ---------
 
 def _middleware_presente():
@@ -1927,6 +1960,11 @@ def eliminar_cert_via_daemon(archivo):
     call_daemon_op({"op": "ELIMINAR_CERT", "archivo": archivo})
 
 
+def desbloquear_token_via_daemon(puk, nuevo_pin):
+    return call_daemon_op({"op": "DESBLOQUEAR_TOKEN", "puk": puk,
+                           "nuevo_pin": nuevo_pin}, timeout=60)["token"]
+
+
 def dispatch_gui_op(req, ctx):
     """Verbos del protocolo local de la GUI (F8), todos sobre el socket del daemon
     porque solo el daemon root ve el token/PIN real."""
@@ -2145,6 +2183,26 @@ def dispatch_gui_op(req, ctx):
             save_config(cfg)
         target.unlink()
         return {"ok": True}
+
+    if op == "DESBLOQUEAR_TOKEN":
+        # desbloquea el token con PUK (SO PIN) y restablece el PIN de usuario.
+        # Solo el daemon root ve el token; la GUI pide PUK + nuevo PIN.
+        try:
+            label = desbloquear_token(req["puk"], req["nuevo_pin"])
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        # el PIN nuevo queda como el de usuario: guardarlo en disco
+        cfg["pin"] = req["nuevo_pin"]
+        save_config(cfg)
+        # invalidar sesión cacheada (el PIN cambió)
+        with _PKCS11_LOCK:
+            if _PKCS11_SESSION_CACHE["session"] is not None:
+                try:
+                    _PKCS11_SESSION_CACHE["session"].close()
+                except Exception:
+                    pass
+                _PKCS11_SESSION_CACHE["session"] = None
+        return {"ok": True, "token": label}
 
     if op == "SET_APARIENCIA":
         tipo = req["tipo"]
@@ -2830,6 +2888,10 @@ def gui_main(pdf_path=None, tipo=None):
                       bg=UI["surface"], fg=UI["danger_fg"], relief="flat",
                       highlightbackground=UI["border"], highlightthickness=1,
                       font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
+            tk.Button(fila_cert, text="Desbloquear con PUK", command=self._cfg_desbloquear_puk,
+                      bg=UI["surface"], fg=UI["warn_fg"], relief="flat",
+                      highlightbackground=UI["border"], highlightthickness=1,
+                      font=UI["ui"], padx=8, pady=2).pack(side="left", padx=(8, 0))
             tb.Button(fila_cert, text="Usar este certificado", command=self._cfg_usar_cert,
                        bootstyle="primary").pack(side="right")
             self._cfg_certs_data = []
@@ -3083,6 +3145,33 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showerror("Eliminar certificado", f"No se pudo eliminar: {e}")
                 return
             messagebox.showinfo("Certificado", "Certificado eliminado.")
+            self._cfg_detectar_certs()
+
+        def _cfg_desbloquear_puk(self):
+            """Desbloquea el token USB con PUK (SO PIN) y restablece el PIN."""
+            puk = simpledialog.askstring("Desbloquear token con PUK",
+                                         "Ingresa el PUK del token:", show="*")
+            if not puk:
+                return
+            nuevo = simpledialog.askstring("Nuevo PIN",
+                                           "Ingresa el nuevo PIN de usuario (mínimo 4 dígitos):",
+                                           show="*")
+            if not nuevo:
+                return
+            if not messagebox.askyesno(
+                    "Desbloquear token",
+                    f"Se desbloqueará el token USB con el PUK y el PIN de usuario "
+                    f"quedará como:\n\n{nuevo}\n\n¿Proceder?"):
+                return
+            try:
+                label = desbloquear_token_via_daemon(puk, nuevo)
+            except Exception as e:
+                messagebox.showerror("Desbloquear token",
+                                      f"No se pudo desbloquear: {e}\n\n"
+                                      "Si el PUK es incorrecto, el token puede volver a bloquearse.")
+                return
+            messagebox.showinfo("Token desbloqueado",
+                                f"Token {label} desbloqueado.\nPIN de usuario restablecido a: {nuevo}")
             self._cfg_detectar_certs()
 
         def _cfg_render_firma(self):
