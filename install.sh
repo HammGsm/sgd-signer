@@ -1,24 +1,62 @@
 #!/usr/bin/env bash
 # Instala sgd-signer como handler de tramitedoc:// en Linux (xdg) o macOS (LaunchServices)
+# Soporta: RHEL/Oracle/Alma/Rocky (dnf/yum), Ubuntu y Debian (apt).
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
 VENV="${SGD_SIGNER_VENV:-/opt/sgd-signer-venv}"
 BIN_DIR="${SGD_SIGNER_BIN:-$HOME/.local/bin}"
 APP_DIR="${SGD_SIGNER_APP:-$HOME/.local/share/sgd-signer}"
 
 echo "== sgd-signer installer =="
 
-# 1. venv con dependencias
+# --- detección de distro ---------------------------------------------------
+DISTRO="desconocida"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    case "$ID${ID_LIKE:+:$ID_LIKE}" in
+        *rhel*|*fedora*|*centos*|*ol*) DISTRO="rhel" ;;
+        *ubuntu*|*debian*) DISTRO="debian" ;;
+    esac
+fi
+echo "Distro detectada: $DISTRO ($PRETTY_NAME)"
+
+# --- dependencias del sistema (requieren sudo; solo se avisa) --------------
+# tkinter: módulo C de la stdlib, el venv lo ve; pero el paquete del sistema
+# debe estar instalado. python3-venv: obligatorio en Debian/Ubuntu.
+FALTAN=()
+if ! python3 -c "import tkinter" >/dev/null 2>&1; then
+    FALTAN+=("tkinter")
+fi
+if [ "$DISTRO" = "debian" ] && ! python3 -m venv --help >/dev/null 2>&1; then
+    FALTAN+=("python3-venv")
+fi
+if [ "$DISTRO" = "debian" ] && ! command -v xdg-mime >/dev/null 2>&1; then
+    FALTAN+=("xdg-utils")
+fi
+if [ ${#FALTAN[@]} -gt 0 ]; then
+    echo "Faltan dependencias del sistema: ${FALTAN[*]}"
+    if [ "$DISTRO" = "debian" ]; then
+        echo "  Instálalas con:  sudo apt install python3-tk python3-venv xdg-utils"
+    elif [ "$DISTRO" = "rhel" ]; then
+        echo "  Instálalas con:  sudo dnf install python3-tkinter"
+    else
+        echo "  Instala el paquete de tkinter de tu distro y vuelve a ejecutar."
+    fi
+    echo "  (opcional, mejora el visor PDF: poppler-utils / poppler-utils)"
+    exit 1
+fi
+
+# --- 1. venv con dependencias ----------------------------------------------
 if [ ! -x "$VENV/bin/python" ]; then
     echo "[1/4] Creando venv en $VENV ..."
     python3 -m venv "$VENV"
-    "$VENV/bin/pip" install -q pyhanko==0.20.0 websocket-client
+    "$VENV/bin/pip" install -q pyhanko==0.20.0 websocket-client python-pkcs11 pillow ttkbootstrap pymupdf
 else
     echo "[1/4] venv ya existe: $VENV"
 fi
 
-# 2. copiar script + assets (todo autocontenido en APP_DIR)
+# --- 2. copiar script + assets (todo autocontenido en APP_DIR) -------------
 echo "[2/4] Copiando sgd-signer.py y assets a $APP_DIR ..."
 mkdir -p "$APP_DIR" "$BIN_DIR" "$APP_DIR/assets"
 cp "$SRC_DIR/sgd-signer.py" "$APP_DIR/sgd-signer.py"
@@ -26,14 +64,14 @@ chmod +x "$APP_DIR/sgd-signer.py"
 cp "$SRC_DIR"/assets/*.jpg "$APP_DIR/assets/" 2>/dev/null || true
 [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP_DIR/assets/"
 
-# 3. wrapper en PATH
+# --- 3. wrapper en PATH ----------------------------------------------------
 cat > "$BIN_DIR/sgd-signer" <<EOF
 #!/usr/bin/env bash
 exec "$VENV/bin/python" "$APP_DIR/sgd-signer.py" "\$@"
 EOF
 chmod +x "$BIN_DIR/sgd-signer"
 
-# 4. registro del protocolo tramitedoc://
+# --- 4. registro del protocolo tramitedoc:// -------------------------------
 if [ "$(uname)" = "Darwin" ]; then
     echo "[3/4] Registrando tramitedoc:// en LaunchServices (bundle .app) ..."
     APP="$HOME/Applications/SGD-Signer.app"
@@ -67,8 +105,6 @@ exec "$VENV/bin/python" "$APP_DIR/sgd-signer.py" "\$@"
 EOF
     chmod +x "$APP/Contents/MacOS/launcher"
     [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP/Contents/Resources/icon.png"
-    # registrar el esquema en LaunchServices (esto es lo que hace que el navegador
-    # pueda lanzar tramitedoc:// con sgd-signer)
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
         -f "$APP" || true
     echo "    Nota: en macOS el navegador preguntará la primera vez si abrir tramitedoc:// con SGD-Signer."

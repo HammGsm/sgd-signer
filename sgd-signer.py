@@ -2095,6 +2095,7 @@ def dispatch_gui_op(req, ctx):
                 "lib": "", "serial_token": "", "key_id": None,
                 "archivo": str(p), "listo": True, "ok": ok, "avisos": msgs,
                 "activo": activo,
+                "no_after": info.get("no_after").isoformat() if info.get("no_after") else None,
             })
         # 2) tokens PKCS#11
         for c in certs:
@@ -2107,6 +2108,7 @@ def dispatch_gui_op(req, ctx):
                 "listo": c.get("listo", False), "ok": ok, "avisos": msgs,
                 "activo": bool(c.get("key_id") and c["key_id"].hex() == elegido),
                 "bloqueado": bool(c.get("bloqueado")),
+                "no_after": c.get("no_after").isoformat() if c.get("no_after") else None,
             })
         return {"ok": True, "certs": salida}
 
@@ -2571,13 +2573,18 @@ def gui_main(pdf_path=None, tipo=None):
                      font=UI["ui_b"]).pack(side="left", padx=(10, 8), pady=8)
             self.pin_pill = pill(pin_bar, "…", UI["warn_bg"], UI["warn_fg"])
             self.pin_pill.pack(side="left", pady=8)
+            self.venc_pill = pill(pin_bar, "", UI["accent_bg"], UI["accent_fg"])
+            self.venc_pill.pack(side="left", padx=(8, 0), pady=8)
+            tb.Button(pin_bar, text="🔔", command=self.abrir_notificaciones,
+                      bootstyle="light", width=3).pack(side="right", padx=6, pady=6)
             tb.Button(pin_bar, text="Ingresar / cambiar PIN", command=self.pedir_pin,
-                       bootstyle="primary").pack(side="right", padx=10, pady=6)
+                      bootstyle="primary").pack(side="right", padx=10, pady=6)
             tb.Button(pin_bar, text="⚙ Configuración", command=self.abrir_configuracion,
                       bootstyle="light").pack(side="right", padx=6, pady=6)
             tb.Button(pin_bar, text="✓ Doctor", command=self.abrir_doctor,
                       bootstyle="light").pack(side="right", padx=6, pady=6)
             self._refrescar_estado_pin()
+            self._refrescar_vencimiento()
 
             # --- barra archivo/tipo ------------------------------------------
             top = tk.Frame(root, bg=UI["bg"])
@@ -2682,6 +2689,132 @@ def gui_main(pdf_path=None, tipo=None):
             }
             texto, bg, fg = textos.get(estado, ("desconocido", UI["warn_bg"], UI["warn_fg"]))
             self.pin_pill.config(text=texto, bg=bg, fg=fg)
+
+        def _cert_activo_info(self):
+            """(cn, no_after) del certificado activo (archivo o token) vía daemon."""
+            try:
+                certs = listar_certs_via_daemon()
+            except Exception:
+                return None, None
+            for c in certs:
+                if c.get("activo"):
+                    return c.get("cn"), c.get("no_after")
+            return None, None
+
+        def _refrescar_vencimiento(self):
+            """Pill sutil con los días restantes del certificado activo.
+            <30 días: ámbar; vencido: rojo. Alerta única por sesión si <30."""
+            import datetime
+            cn, no_after = self._cert_activo_info()
+            if not no_after:
+                self.venc_pill.config(text="", bg=UI["accent_bg"], fg=UI["accent_fg"])
+                return
+            try:
+                vence = datetime.datetime.fromisoformat(no_after)
+                dias = (vence - datetime.datetime.now(vence.tzinfo)).days
+            except Exception:
+                self.venc_pill.config(text="", bg=UI["accent_bg"], fg=UI["accent_fg"])
+                return
+            if dias < 0:
+                texto, bg, fg = f"VENCIDO hace {-dias}d", UI["danger_bg"], UI["danger_fg"]
+            elif dias <= 30:
+                texto, bg, fg = f"Vence en {dias}d", UI["warn_bg"], UI["warn_fg"]
+            else:
+                texto, bg, fg = f"Vence en {dias}d", UI["accent_bg"], UI["accent_fg"]
+            self.venc_pill.config(text=texto, bg=bg, fg=fg)
+            if dias <= 30 and not getattr(self, "_aviso_venc_hecho", False):
+                self._aviso_venc_hecho = True
+                messagebox.showwarning(
+                    "Certificado por vencer",
+                    f"El certificado activo ({cn or '?'}) vence el {vence:%d/%m/%Y} "
+                    f"({dias} días).\n\nRenueva el certificado antes de esa fecha.")
+
+        def abrir_notificaciones(self):
+            """Panel sutil: salud del doctor + vencimientos de todos los certificados."""
+            import datetime
+            win = tk.Toplevel(self.root)
+            win.title("Notificaciones — sgd-signer")
+            win.geometry("520x420")
+            win.minsize(460, 300)
+            win.configure(bg=UI["bg"])
+            win.transient(self.root)
+            win.grab_set()
+
+            _cont = tk.Frame(win, bg=UI["bg"])
+            _cont.pack(fill="both", expand=True, padx=16, pady=16)
+            _cv = tk.Canvas(_cont, bg=UI["bg"], highlightthickness=0)
+            _sb = tk.Scrollbar(_cont, orient="vertical", command=_cv.yview)
+            _cv.configure(yscrollcommand=_sb.set)
+            _sb.pack(side="right", fill="y")
+            _cv.pack(side="left", fill="both", expand=True)
+            body = tk.Frame(_cv, bg=UI["bg"])
+            _win_id = _cv.create_window((0, 0), window=body, anchor="nw")
+            body.configure(padx=8, pady=8)
+
+            def _ajustar(_e=None):
+                _cv.configure(scrollregion=_cv.bbox("all"))
+                _cv.itemconfigure(_win_id, width=_cv.winfo_width())
+            body.bind("<Configure>", _ajustar)
+            _cv.bind("<Configure>", _ajustar)
+
+            def seccion(titulo):
+                f = tk.Frame(body, bg=UI["surface"], highlightbackground=UI["border"],
+                             highlightthickness=1)
+                f.pack(fill="x", pady=(0, 10))
+                tk.Label(f, text=titulo, bg=UI["surface"], fg=UI["ink"],
+                         font=UI["ui_b"]).pack(anchor="w", padx=12, pady=(10, 4))
+                return f
+
+            # --- salud del doctor ---
+            f_doc = seccion("Salud del sistema (Doctor)")
+            try:
+                diag = diagnostico()
+            except Exception as e:
+                tk.Label(f_doc, text=f"Error al diagnosticar: {e}", bg=UI["surface"],
+                         fg=UI["danger_fg"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 10))
+                diag = []
+            for d in diag:
+                marca = "✓" if d["ok"] else "✗"
+                color = UI["accent_fg"] if d["ok"] else UI["danger_fg"]
+                tk.Label(f_doc, text=f"{marca}  {d['item']}: {d['detalle']}", bg=UI["surface"],
+                         fg=color, font=UI["ui"], anchor="w").pack(anchor="w", padx=12, pady=1)
+            if not diag:
+                tk.Label(f_doc, text="(sin datos)", bg=UI["surface"], fg=UI["muted"],
+                         font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 10))
+
+            # --- vencimientos ---
+            f_venc = seccion("Vencimiento de certificados")
+            try:
+                certs = listar_certs_via_daemon()
+            except Exception as e:
+                tk.Label(f_venc, text=f"No se pudo listar: {e}", bg=UI["surface"],
+                         fg=UI["danger_fg"], font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 10))
+                certs = []
+            ahora = datetime.datetime.now(datetime.timezone.utc)
+            for c in certs:
+                no_after = c.get("no_after")
+                if not no_after:
+                    continue
+                try:
+                    vence = datetime.datetime.fromisoformat(no_after)
+                    dias = (vence - ahora).days
+                except Exception:
+                    continue
+                if dias < 0:
+                    estado, color = f"VENCIDO hace {-dias}d", UI["danger_fg"]
+                elif dias <= 30:
+                    estado, color = f"vence en {dias}d", UI["warn_fg"]
+                else:
+                    estado, color = f"vence en {dias}d", UI["accent_fg"]
+                marca = "✓ " if c.get("activo") else "  "
+                tk.Label(f_venc, text=f"{marca}{c['cn']} — {estado} ({vence:%d/%m/%Y})",
+                         bg=UI["surface"], fg=color, font=UI["ui"], anchor="w").pack(anchor="w", padx=12, pady=1)
+            if not certs:
+                tk.Label(f_venc, text="(sin certificados)", bg=UI["surface"], fg=UI["muted"],
+                         font=UI["ui"]).pack(anchor="w", padx=12, pady=(0, 10))
+
+            tb.Button(body, text="Cerrar", command=win.destroy,
+                      bootstyle="primary").pack(pady=(4, 0))
 
         def pedir_pin(self):
             cert_activo = None
