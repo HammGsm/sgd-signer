@@ -2722,9 +2722,9 @@ def gui_main(pdf_path=None, tipo=None):
                 self.pin_pill.config(text=f"daemon no disponible", bg=UI["danger_bg"], fg=UI["danger_fg"])
                 return
             textos = {
-                "disco": ("PIN guardado en memoria (permanente)", UI["accent_bg"], UI["accent_fg"]),
-                "sesion": ("PIN guardado en memoria (esta sesión)", UI["accent_bg"], UI["accent_fg"]),
-                "ninguno": ("Sin PIN guardado", UI["warn_bg"], UI["warn_fg"]),
+                "disco": ("PIN en disco", UI["accent_bg"], UI["accent_fg"]),
+                "sesion": ("PIN en sesión", UI["accent_bg"], UI["accent_fg"]),
+                "ninguno": ("Sin PIN", UI["warn_bg"], UI["warn_fg"]),
             }
             texto, bg, fg = textos.get(estado, ("desconocido", UI["warn_bg"], UI["warn_fg"]))
             self.pin_pill.config(text=texto, bg=bg, fg=fg)
@@ -3028,9 +3028,8 @@ def gui_main(pdf_path=None, tipo=None):
             self._refrescar_cfg_pin_status()
             # --- certificado de firma ------------------------------------------
             f_cert = seccion("Certificado de firma")
-            tk.Label(f_cert, text="Certificados importados (.p12/.pfx) y tokens USB conectados.\n"
-                                  "Los importados se guardan en ~/.sgd-signer/certs/ y se pueden eliminar;\n"
-                                  "los tokens viven en el dispositivo y reaparecen al reconectarlo.",
+            tk.Label(f_cert, text="Importados (.p12/.pfx) y tokens USB. Los importados se guardan\n"
+                                  "en ~/.sgd-signer/certs/ y se eliminan; los tokens viven en el dispositivo.",
                      bg=UI["surface"], fg=UI["muted"], font=UI["ui"], justify="left").pack(anchor="w", padx=12, pady=(0, 6))
             cont_cert = tk.Frame(f_cert, bg=UI["surface"])
             cont_cert.pack(fill="x", padx=12, pady=(0, 6))
@@ -3441,10 +3440,6 @@ def gui_main(pdf_path=None, tipo=None):
                                font=UI["mono"], highlightbackground=UI["border"],
                                highlightthickness=1, activestyle="none")
             lista.pack(fill="both", expand=True, padx=12, pady=(0, 6))
-            fila_lista = tk.Frame(f_lista, bg=UI["surface"])
-            fila_lista.pack(fill="x", padx=12, pady=(0, 10))
-            btn_plano(fila_lista, "Agregar PDFs…", _agregar).pack(side="left")
-            btn_plano(fila_lista, "Quitar seleccionados", _quitar, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
             self._masiva_pdfs = []
 
             def _agregar():
@@ -3464,7 +3459,12 @@ def gui_main(pdf_path=None, tipo=None):
 
             def _resumen():
                 n = len(self._masiva_pdfs)
-                lbl_resumen.config(text=f"{n} documento(s) seleccionado(s)")
+                lbl_resumen.config(text=f"{n} documento(s)")
+
+            fila_lista = tk.Frame(f_lista, bg=UI["surface"])
+            fila_lista.pack(fill="x", padx=12, pady=(0, 10))
+            btn_plano(fila_lista, "Agregar PDFs…", _agregar).pack(side="left")
+            btn_plano(fila_lista, "Quitar seleccionados", _quitar, fg=UI["danger_fg"]).pack(side="left", padx=(8, 0))
 
             f_opc = tk.Frame(win, bg=UI["surface"], highlightbackground=UI["border"],
                              highlightthickness=1)
@@ -3474,7 +3474,7 @@ def gui_main(pdf_path=None, tipo=None):
 
             fila_tipo = tk.Frame(f_opc, bg=UI["surface"])
             fila_tipo.pack(fill="x", padx=12, pady=(0, 6))
-            tk.Label(fila_tipo, text="Tipo de firma:", bg=UI["surface"], fg=UI["muted"],
+            tk.Label(fila_tipo, text="Tipo:", bg=UI["surface"], fg=UI["muted"],
                      font=UI["ui"]).pack(side="left")
             tipo_var = tk.StringVar(value=self.tipo.get())
             tk.OptionMenu(fila_tipo, tipo_var, *[NOMBRES_TIPO[t] for t in sorted(TIPOS)]).config(
@@ -3487,16 +3487,16 @@ def gui_main(pdf_path=None, tipo=None):
             tk.Label(fila_modo, text="Modo:", bg=UI["surface"], fg=UI["muted"],
                      font=UI["ui"]).pack(side="left")
             modo_var = tk.StringVar(value="pdf")
-            tk.Radiobutton(fila_modo, text="1 firma por PDF", variable=modo_var, value="pdf",
+            tk.Radiobutton(fila_modo, text="1 por PDF", variable=modo_var, value="pdf",
                            bg=UI["surface"], fg=UI["ink"], font=UI["ui"],
                            activebackground=UI["surface"]).pack(side="left", padx=(8, 0))
-            tk.Radiobutton(fila_modo, text="1 firma por hoja", variable=modo_var, value="hoja",
+            tk.Radiobutton(fila_modo, text="1 por hoja", variable=modo_var, value="hoja",
                            bg=UI["surface"], fg=UI["ink"], font=UI["ui"],
                            activebackground=UI["surface"]).pack(side="left", padx=(8, 0))
-            tk.Label(fila_modo, text="(firma cada página del PDF)", bg=UI["surface"],
+            tk.Label(fila_modo, text="(cada página)", bg=UI["surface"],
                      fg=UI["muted"], font=UI["ui"]).pack(side="left", padx=(6, 0))
 
-            lbl_resumen = tk.Label(f_opc, text="0 documento(s) seleccionado(s)",
+            lbl_resumen = tk.Label(f_opc, text="0 documento(s)",
                                    bg=UI["surface"], fg=UI["muted"], font=UI["mono"])
             lbl_resumen.pack(anchor="w", padx=12, pady=(0, 10))
 
@@ -3509,11 +3509,10 @@ def gui_main(pdf_path=None, tipo=None):
                 n_firmas = sum(_pdf_num_paginas(p) for p in self._masiva_pdfs) if modo == "hoja" \
                     else len(self._masiva_pdfs)
                 if not messagebox.askyesno(
-                    "Confirmación de la Firma Digital Masiva",
-                    f"Se firmarán {len(self._masiva_pdfs)} documento(s) — {n_firmas} firma(s) "
+                    "Confirmación — Firma Masiva",
+                    f"{len(self._masiva_pdfs)} documento(s) — {n_firmas} firma(s) "
                     f"({modo_var.get() == 'hoja' and '1 por hoja' or '1 por PDF'}) "
-                    f"con el tipo {NOMBRES_TIPO[tipo]}.\n\n"
-                    "Cada firma digital tiene validez y eficacia jurídica. "
+                    f"con tipo {NOMBRES_TIPO[tipo]}.\n\n"
                     "Al aceptar declaras haber leído cada archivo. ¿Proceder?"
                 ):
                     return
