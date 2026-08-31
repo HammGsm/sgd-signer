@@ -11,9 +11,9 @@ $SrcDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Write-Host "== SGD-SIGNER installer (Windows) =="
 
-# 1. dependencias Python
-Write-Host "[1/3] Instalando dependencias (pyhanko, websocket-client, python-pkcs11)..."
-python -m pip install --quiet pyhanko==0.20.0 websocket-client python-pkcs11
+# 1. dependencias Python (todas las de la app: firma, GUI, vista previa)
+Write-Host "[1/3] Instalando dependencias (pyhanko, websocket-client, python-pkcs11, pillow, pymupdf)..."
+python -m pip install --quiet pyhanko==0.20.0 websocket-client python-pkcs11 pillow pymupdf
 
 # 2. copiar script + assets
 Write-Host "[2/3] Copiando sgd-signer.py y assets a $AppDir ..."
@@ -50,3 +50,4 @@ Write-Host "  sgd-signer gui          (abrir la GUI)"
 Write-Host ""
 Write-Host "Nota: el token USB Bit4id requiere su middleware instalado y configurar"
 Write-Host "      'token_lib' en %USERPROFILE%\.sgd-signer\config.json con la ruta del .dll PKCS#11."
+Write-Host "      El sello de tiempo TSA se configura desde la GUI (Configuración → TSA)."

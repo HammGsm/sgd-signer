@@ -1,7 +1,7 @@
 # SGD-SIGNER — Firma digital para el SGD de SENAMHI
 
 Aplicación de firma digital para el Sistema de Gestión Documental (SGD) de
-SENAMHI. Compatible con **Linux, macOS y Windows**.
+SENAMHI. Compatible con **Linux (RHEL/Ubuntu/Debian), macOS y Windows**.
 
 Firma documentos PDF con certificado digital (token USB PKCS#11 o archivo
 `.p12`/`.pfx`) y se integra con el portal de trámite documentario a través del
@@ -18,11 +18,25 @@ protocolo `tramitedoc://`.
    `FirmaDigital`/`VistoDigital`, sufijo `[NF]`/`[F]`/`[VF]`).
 4. El portal sube el documento firmado automáticamente.
 
-## Flujo de firma
+## Características (v1.0.0)
 
-- **Abrir el programa → leer el documento → firmar.**
-- Si el PIN está guardado y el sistema lo reconoce, **no pide clave**.
-- Si no hay PIN guardado, lo pide al momento de firmar.
+- **Firma PAdES** visible, 7 tipos (titular, básica, V°B°, avanzada, recepción, encargo).
+- **Certificados importados** (.p12/.pfx): importar desde la GUI, listar junto a
+  los tokens USB, eliminar, clave por archivo, doble-click para elegir.
+- **Token USB PKCS#11**: auto-detección, desbloqueo con **PUK** (C_InitPIN),
+  aviso si el PIN está bloqueado.
+- **Sello de tiempo TSA** (PAdES B-T): FreeTSA preconfigurada (gratuita, sin
+  credenciales), habilitar/deshabilitar desde la GUI, soporta TSA con
+  login/password y política (ej. Camerfirma).
+- **Verificador de firma integrado**: botón "Verificar firma" — firmante,
+  validez, fecha, algoritmo (mismo motor que firma: pyhanko).
+- **Aviso de vencimiento**: pill con días restantes del certificado activo
+  (ámbar ≤30 días, rojo vencido) + panel de notificaciones (Doctor + vencimientos).
+- **Firma masiva**: 1 firma por PDF o por hoja, con confirmación.
+- **Doctor**: diagnóstico de instalación (daemon, middleware, esquema, token,
+  deps, certificados) con auto-reparación.
+- **Rediseño**: tk puro (sin ttkbootstrap), paleta warm monochrome, cards
+  Material, hover con transición, layout responsive.
 
 ## Instalación
 
@@ -32,7 +46,7 @@ Descargar de [Releases](https://github.com/HammGsm/sgd-signer/releases) el archi
 
 | Sistema | Archivo |
 |---|---|
-| Linux (RHEL/Oracle/Ubuntu x64) | `sgd-signer-linux-x64.tar.gz` |
+| Linux (RHEL/Oracle/Ubuntu/Debian x64) | `sgd-signer-linux-x64.tar.gz` |
 | Windows x64 | `sgd-signer-windows-x64.zip` |
 | macOS Intel | `sgd-signer-macos-x64.tar.gz` |
 | macOS Apple Silicon (M1/M2/M3) | `sgd-signer-macos-arm64.tar.gz` |
@@ -43,8 +57,9 @@ tar xzf sgd-signer-linux-x64.tar.gz
 ```
 
 No requiere Python ni dependencias: todo va dentro del binario. En Linux el
-binario se compila sobre glibc 2.34 (RHEL/Oracle Linux 9). En macOS, la primera
-vez: clic derecho → Abrir (Gatekeeper, binario sin firmar por Apple).
+binario se compila sobre glibc 2.34 (RHEL/Oracle Linux 9) — compatible con
+Ubuntu 22.04+ y Debian 12+. En macOS, la primera vez: clic derecho → Abrir
+(Gatekeeper, binario sin firmar por Apple).
 
 ### Opción B — desde el código
 
@@ -52,10 +67,11 @@ vez: clic derecho → Abrir (Gatekeeper, binario sin firmar por Apple).
 chmod +x install.sh && ./install.sh
 ```
 
-- **Linux**: registra `tramitedoc://` vía `xdg-mime` (Firefox/Chrome lo respetan).
+- **Linux (RHEL/Ubuntu/Debian)**: detecta la distro, verifica dependencias del
+  sistema (tkinter, python3-venv, xdg-utils) con instrucciones por distro, e
+  instala todas las deps del venv. Registra `tramitedoc://` vía `xdg-mime`.
 - **macOS**: registra el esquema vía LaunchServices (el navegador pide permiso la 1ª vez).
-- **Windows**: el motor de firma (Python + pyhanko + tkinter) es multiplataforma; el
-  registro del esquema `tramitedoc://` en Windows está pendiente (ver `install.ps1` cuando se agregue).
+- **Windows**: `powershell -ExecutionPolicy Bypass -File install.ps1` (como Administrador).
 
 ## Uso
 
@@ -76,29 +92,44 @@ sgd-signer sign documento.pdf --tipo 2
 ```
 
 Tipos de firma: `1`=Firma titular, `2`=Firma básica, `3`=V° B°, `4`=Firma
-avanzada, `5`=V° B° avanzada, `6`=Firma recepción.
+avanzada, `5`=V° B° avanzada, `6`=Firma recepción, `7`=Encargo.
 
 ## Configuración (`~/.sgd-signer/config.json`)
 
 ```json
-{ "cert": "/ruta/cert.p12", "pin": "1234", "tsl_check": true }
+{
+  "cert": "/ruta/cert.p12",
+  "pin": "1234",
+  "tsl_check": true,
+  "tsa_url": "https://freetsa.org/tsr",
+  "tsa_user": "",
+  "tsa_pass": "",
+  "tsa_policy": ""
+}
 ```
 
 - `tsl_check: true` (default) verifica que el certificado esté en la TSL de
   INDECOPI (`https://iofe.indecopi.gob.pe/TSL/tsl-pe.xml`) antes de firmar.
+- `tsa_url` activa el sello de tiempo RFC 3161 (PAdES B-T). FreeTSA no requiere
+  credenciales; para TSA con auth (ej. Camerfirma) usa `tsa_user`/`tsa_pass` y
+  `tsa_policy` (OID de la política). Todo configurable desde la GUI.
+- `cert_pins`: claves por archivo importado (se gestionan desde la GUI).
 - El PIN se guarda con permisos `600`.
 - La GUI permite configurar por tipo de firma: imagen de firma, posición de la
   imagen dentro del sello, y posición del sello en la página.
 
-## Requisitos
+## Requisitos (solo Opción B — desde el código)
 
 - Python 3.9+
-- `pyhanko` + `pyhanko-certvalidator` (firma PAdES)
+- `pyhanko==0.20.0` + `pyhanko-certvalidator` (firma PAdES)
 - `python-pkcs11` (token USB) — opcional si usas `.p12`
-- `poppler-utils` (`pdftoppm`, `pdfinfo`) — para la vista previa de la GUI
-- `python3-tkinter` — para la GUI
+- `pillow`, `pymupdf` (vista previa de la GUI; reemplaza a poppler-utils)
+- `python3-tkinter` — para la GUI (paquete del sistema)
 
 ## Verificación
+
+Desde la GUI: abre el PDF firmado y pulsa **"Verificar firma"** (firmante,
+validez, fecha, algoritmo). O desde terminal:
 
 ```bash
 sgd-signer sign doc.pdf --tipo 2
@@ -118,3 +149,8 @@ print(s.field_name, s.summarise_integrity_info()['coverage'])
   dentro de la red institucional.
 - La verificación TSL/OCSP/CRL es informativa (no bloquea la firma si el
   certificado no está en el trust store del sistema).
+- "Certificado raíz de TSA en TSL: No" en el verificador del portal es normal
+  con FreeTSA (TSA alemana no acreditada por INDECOPI) — el sello es válido
+  (PAdES B-T); para "Sí" se necesita una TSA acreditada en Perú.
+- El token USB Bit4id requiere su middleware (`libbit4xpki.so` en Linux,
+  `bit4xpki.dll` en Windows) — el Doctor lo detecta y da instrucciones.
