@@ -1416,13 +1416,13 @@ def open_path(p):
     if sys.platform == "darwin":
         subprocess.Popen(["open", p])
         return
-    env_gui = _entorno_grafico_usuario("hruiz")
+    env_gui = _entorno_grafico_usuario()
     if env_gui:
         env = dict(os.environ)
         env.update(env_gui)
         try:
             subprocess.Popen(
-                ["runuser", "-u", "hruiz", "--", "xdg-open", p],
+                ["runuser", "-u", Path.home().name, "--", "xdg-open", p],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, env=env, start_new_session=True,
             )
@@ -1614,11 +1614,12 @@ def handle_message(msg, ctx):
     return reply("1", f"opcion no disponible -- {accion}")
 
 
-def _entorno_grafico_usuario(usuario="hruiz"):
+def _entorno_grafico_usuario(usuario=None):
     """Detecta DISPLAY/DBUS_SESSION_BUS_ADDRESS reales de la sesión gráfica activa
     de `usuario`, leyendo el environ de un proceso de su sesión (gnome-shell/Xorg).
     No hardcodea :1 / uid 1000 — la sesión puede reiniciar con otro número.
     En Windows no aplica (el daemon corre como el mismo usuario): devuelve {}."""
+    usuario = usuario or Path.home().name
     if IS_WIN:
         return {}
     if IS_MAC:
@@ -1632,7 +1633,7 @@ def _entorno_grafico_usuario(usuario="hruiz"):
     except subprocess.CalledProcessError:
         pid = None
     if not pid:
-        for proc in ("gnome-session", "Xorg", "Xwayland"):
+        for proc in ("gnome-session", "cosmic-session", "Xorg", "Xwayland"):
             try:
                 pid = subprocess.check_output(
                     ["pgrep", "-u", usuario, "-n", proc], text=True
@@ -1654,6 +1655,19 @@ def _entorno_grafico_usuario(usuario="hruiz"):
             k, v = kv.split(b"=", 1)
             env[k.decode()] = v.decode()
     out = {k: env[k] for k in ("DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR") if k in env}
+    if "DISPLAY" not in out and IS_LINUX:
+        # Wayland nativo (COSMIC/GNOME-Wayland): el environ de la sesión no tiene
+        # DISPLAY, pero Xwayland del mismo usuario expone un socket X11 (/tmp/.X11-unix/X<N>).
+        # El daemon corre como root: comparar contra el uid del USUARIO, no el propio.
+        try:
+            import pwd
+            uid_usuario = pwd.getpwnam(usuario).pw_uid
+            for sock in Path("/tmp/.X11-unix").glob("X*"):
+                if sock.stat().st_uid == uid_usuario:
+                    out["DISPLAY"] = ":" + sock.name[1:]
+                    break
+        except (OSError, KeyError):
+            pass
     return out or None
 
 
@@ -1661,6 +1675,7 @@ def _ejecutar_dialogo(script, marca, usuario, timeout):
     """Ejecuta un script Tkinter de diálogo y devuelve su stdout (str) o None si
     timeout/error. Linux: runuser + entorno gráfico detectado. Windows: directo
     (el daemon corre como el mismo usuario)."""
+    usuario = usuario or Path.home().name
     env_gui = _entorno_grafico_usuario(usuario)
     if env_gui is None:
         log(f"AVISO: no se encontró sesión gráfica de {usuario}")
@@ -1672,7 +1687,7 @@ def _ejecutar_dialogo(script, marca, usuario, timeout):
     elif IS_MAC:
         cmd = [sys.executable, "-c", script]
     else:
-        cmd = ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3", "-c", script]
+        cmd = ["runuser", "-u", usuario, "--", sys.executable, "-c", script]
     proc = None
     try:
         proc = subprocess.Popen(
@@ -1697,11 +1712,12 @@ def _ejecutar_dialogo(script, marca, usuario, timeout):
         return None
 
 
-def confirmar_en_gui_usuario(mensaje, titulo, usuario="hruiz", timeout=120):
+def confirmar_en_gui_usuario(mensaje, titulo, usuario=None, timeout=120):
     """Muestra un diálogo Sí/No nativo (Tkinter) en la sesión gráfica del usuario y
     devuelve True/False. Usado para replicar el diálogo de confirmación de firma
     masiva del original, que corría en la GUI de escritorio — el daemon vive
     headless como root, así que delega la pregunta a la sesión real de hruiz."""
+    usuario = usuario or Path.home().name
     marca = f"SGD_SIGNER_CONFIRM_{os.getpid()}_{int(time.time())}"
     script = (
         f"{marca}=True; "  # marca única en el CMDLINE (visible a pkill -f), no en environ
@@ -1714,9 +1730,10 @@ def confirmar_en_gui_usuario(mensaje, titulo, usuario="hruiz", timeout=120):
     return out == "SI"
 
 
-def pedir_pin_gui_usuario(usuario="hruiz", timeout=120):
+def pedir_pin_gui_usuario(usuario=None, timeout=120):
     """Pide el PIN del token con un diálogo Tkinter en la sesión gráfica del usuario.
     Devuelve el PIN o None si cancela/timeout."""
+    usuario = usuario or Path.home().name
     marca = f"SGD_SIGNER_PIN_{os.getpid()}_{int(time.time())}"
     script = (
         f"{marca}=True; "
@@ -1729,10 +1746,11 @@ def pedir_pin_gui_usuario(usuario="hruiz", timeout=120):
     return out or None
 
 
-def lanzar_gui_usuario(pdf_path, tipo, usuario="hruiz"):
+def lanzar_gui_usuario(pdf_path, tipo, usuario=None):
     """Abre la GUI de firma (sgd-signer gui) en la sesión gráfica del usuario, con el
     PDF ya cargado y el tipo preseleccionado. Linux: el daemon es root sin DISPLAY,
     delega a la sesión real vía runuser. Windows: directo (mismo usuario)."""
+    usuario = usuario or Path.home().name
     env_gui = _entorno_grafico_usuario(usuario)
     if env_gui is None:
         log(f"AVISO: no se encontró sesión gráfica de {usuario}; no se puede abrir la GUI")
@@ -1747,7 +1765,7 @@ def lanzar_gui_usuario(pdf_path, tipo, usuario="hruiz"):
         # GUI directo con el python del venv (sin runuser, que no existe en macOS).
         cmd = [sys.executable, str(script), "gui", pdf_path, "--tipo", tipo]
     else:
-        cmd = ["runuser", "-u", usuario, "--", "/opt/sgd-signer-venv/bin/python3",
+        cmd = ["runuser", "-u", usuario, "--", sys.executable,
                str(script), "gui", pdf_path, "--tipo", tipo]
     try:
         subprocess.Popen(
