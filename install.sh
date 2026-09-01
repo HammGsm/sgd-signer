@@ -51,7 +51,11 @@ fi
 if [ ! -x "$VENV/bin/python" ]; then
     echo "[1/4] Creando venv en $VENV ..."
     python3 -m venv "$VENV"
+
     "$VENV/bin/pip" install -q pyhanko==0.20.0 websocket-client python-pkcs11 pillow pymupdf
+
+    "$VENV/bin/pip" install -q pyhanko==0.20.0 websocket-client python-pkcs11 pillow ttkbootstrap pymupdf
+
 else
     echo "[1/4] venv ya existe: $VENV"
 fi
