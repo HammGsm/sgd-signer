@@ -1250,8 +1250,36 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     )
 
     out_path = out_path or (pdf_path[:-4] + sufijo + ".pdf")
-    with open(out_path, "wb") as outf:
-        pdf_signer.sign_pdf(w, output=outf, appearance_text_params=text_params or None)
+
+    # ContactInfo en el diccionario de firma (paridad con el portal .NET):
+    # el original escribe /ContactInfo(tipo N° numero) dentro del diccionario
+    # Sig (ver ejemplo.pdf). pyHanko no lo expone en PdfSignatureMetadata, así
+    # que se inyecta parcheando el constructor de SignatureObject: el campo
+    # queda en el diccionario ANTES de calcular el ByteRange (firmado, igual
+    # que el original) — no rompe la firma.
+    # Firma manual (sin formato $ del portal): usa el nombre del archivo.
+    contact_info = (extra or {}).get("NumeroDoc") or os.path.splitext(os.path.basename(pdf_path))[0]
+    _sig_obj_patch = None
+    if contact_info:
+        from pyhanko.sign.signers.pdf_byterange import SignatureObject as _SigObj
+        from pyhanko.pdf_utils.generic import pdf_name as _pdf_name, pdf_string as _pdf_string
+
+        _orig_sig_init = _SigObj.__init__
+        _ci = contact_info
+
+        def _sig_init_con_contacto(self, *a, **kw):
+            _orig_sig_init(self, *a, **kw)
+            self[_pdf_name('/ContactInfo')] = _pdf_string(_ci)
+
+        _sig_obj_patch = _SigObj.__init__
+        _SigObj.__init__ = _sig_init_con_contacto
+
+    try:
+        with open(out_path, "wb") as outf:
+            pdf_signer.sign_pdf(w, output=outf, appearance_text_params=text_params or None)
+    finally:
+        if _sig_obj_patch is not None:
+            _SigObj.__init__ = _orig_sig_init
     return out_path
 
 
