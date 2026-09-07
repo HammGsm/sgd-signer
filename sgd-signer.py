@@ -2721,6 +2721,7 @@ def gui_main(pdf_path=None, tipo=None):
         def __init__(self, root):
             self.root = root
             self.pdf_path = None
+            self.firmado_path = None
             self.pagina = 1
             self.n_paginas = 1
             self.pos_pt = None
@@ -3807,6 +3808,7 @@ def gui_main(pdf_path=None, tipo=None):
                 messagebox.showerror("Error", f"No se pudo leer el PDF: {e}")
                 return
             self.pdf_path = p
+            self.firmado_path = None
             self.pagina = 1
             self.lbl_archivo.config(text=os.path.basename(p))
             self.btn_firmar.config(state="normal")
@@ -3816,9 +3818,10 @@ def gui_main(pdf_path=None, tipo=None):
         def _dibujar_preview_firma(self):
             """Dibuja un rectángulo semitransparente donde irá la firma, usando la
             misma caja que sign_pdf (firma_box) para que la preview ocupe el espacio
-            real. Coordenadas PDF (desde abajo) → canvas (desde arriba)."""
+            real. Coordenadas PDF (desde abajo) → canvas (desde arriba).
+            No dibuja nada si el documento ya está firmado (la firma ya es visible)."""
             self.canvas.delete("preview_firma")
-            if not self.pdf_path:
+            if not self.pdf_path or self.firmado_path:
                 return
             pos = self.pos_pt
             box = firma_box(self.tipo.get(), self.page_w_pt, self.page_h_pt, pos=pos)
@@ -3960,6 +3963,11 @@ def gui_main(pdf_path=None, tipo=None):
                 # en vez de firmar in-process (aquí corremos como hruiz, sin acceso al token).
                 out = manual_sign_via_daemon(self.pdf_path, tipo, pos=pos, pagina=self.pagina)
                 self.lbl_status.config(text=f"Firmado: {out}", fg=UI["accent_fg"])
+                # Vista previa del documento FIRMADO: recargar el PDF [F] en el
+                # canvas (con la firma visible) en vez de dejar el original.
+                self.firmado_path = out
+                self.cargar(out)
+                self.lbl_archivo.config(text=f"{os.path.basename(out)}  (firmado)")
                 messagebox.showinfo("OK", f"Documento firmado:\n{out}")
             except Exception as e:
                 self.lbl_status.config(text="Error al firmar", fg=UI["danger_fg"])
