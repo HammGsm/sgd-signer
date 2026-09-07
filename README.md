@@ -38,6 +38,16 @@ protocolo `tramitedoc://`.
 - **Rediseño**: tk puro (sin ttkbootstrap), paleta warm monochrome, cards
   Material, hover con transición, layout responsive.
 
+## Plataformas probadas
+
+| Sistema | Estado | Notas |
+|---|---|---|
+| **Oracle Linux 9 / RHEL 9** (PC SENAMHI) | ✅ Producción | Daemon systemd + token USB Bit4id + GUI |
+| **Pop!_OS 24.04** (PC de Luis) | ✅ Producción | Daemon systemd + certificado importado (.pfx) |
+| **macOS 26.6** (MacBook Intel) | ✅ Producción | LaunchAgent + token USB |
+| Ubuntu 22.04+ / Debian 12+ | ✅ Soportado | install.sh multi-distro (no probado en producción) |
+| Windows x64 | ⚠️ Soportado | install.ps1 (no probado en producción) |
+
 ## Instalación
 
 ### Opción A — binario listo (recomendado)
