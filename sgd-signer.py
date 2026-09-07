@@ -2707,12 +2707,127 @@ def _chequeo_instalacion(root):
         messagebox.showwarning("sgd-signer — middleware requerido", msg)
 
 
+def _gui_socket_path():
+    """Ruta del socket Unix de single-instance de la GUI (por usuario)."""
+    d = Path.home() / ".sgd-signer"
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(d / "gui.sock")
+
+
+def _gui_forward(pdf_path, tipo):
+    """Intenta reenviar la petición a una GUI ya abierta (single-instance).
+
+    Conecta al socket Unix; si hay instancia, le manda 'pdf\\0tipo' y espera
+    ACK. Devuelve True si se reenvió (el llamador debe salir), False si no
+    hay instancia (el llamador debe crear la GUI)."""
+    import socket as _socket
+    sock_path = _gui_socket_path()
+    if not os.path.exists(sock_path):
+        return False
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(sock_path)
+        payload = (pdf_path or "") + "\0" + (tipo or "") + "\0"
+        s.sendall(payload.encode("utf-8", errors="replace"))
+        try:
+            ack = s.recv(4)
+            return ack == b"ACK\n"
+        except Exception:
+            return True  # la instancia recibió; no esperamos más
+    except Exception:
+        # socket stale (instancia murió sin limpiar): borrarlo y seguir
+        try:
+            os.unlink(sock_path)
+        except OSError:
+            pass
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _gui_socket_server(root, app_ref):
+    """Crea el socket Unix de single-instance y un hilo que acepta conexiones.
+
+    Cada conexión trae 'pdf\\0tipo\\0'; se programa root.after para cargar el
+    PDF en la GUI existente (y preseleccionar el tipo). Devuelve el hilo."""
+    import socket as _socket
+    import threading as _threading
+    sock_path = _gui_socket_path()
+    try:
+        os.unlink(sock_path)
+    except OSError:
+        pass
+    srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    srv.listen(8)
+    srv.settimeout(0.5)
+
+    def _aceptar():
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except _socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                conn.settimeout(2.0)
+                data = b""
+                while b"\0" not in data:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                try:
+                    conn.sendall(b"ACK\n")
+                except OSError:
+                    pass
+                partes = data.decode("utf-8", errors="replace").split("\0")
+                pdf = partes[0] if partes else ""
+                tipo = partes[1] if len(partes) > 1 else ""
+                if pdf:
+                    def _cargar(p=pdf, t=tipo):
+                        a = app_ref.get("app")
+                        if a is not None:
+                            try:
+                                a.cargar(p)
+                                if t and hasattr(a, "tipo"):
+                                    try:
+                                        a.tipo.set(t)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                    root.after(0, _cargar)
+            except Exception:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    th = _threading.Thread(target=_aceptar, daemon=True)
+    th.start()
+    return th
+
+
 def gui_main(pdf_path=None, tipo=None):
     """GUI de firma manual: abrir PDF, elegir tipo de firma,
     click en la página para posición/imagen por tipo (persistente), gestión de
     PIN con indicador de estado. Tkinter + pdftoppm (poppler-utils, ya instalado)
     — sin dependencias nuevas. Estilo: minimalist-ui (warm monochrome, sin
     gradientes/sombras pesadas)."""
+    # single-instance: si ya hay una GUI abierta, reenviar el PDF y salir
+    if _gui_forward(pdf_path, tipo):
+        return
     import tkinter as tk
     from tkinter import filedialog, messagebox, simpledialog, ttk
     from PIL import Image, ImageTk
@@ -4051,7 +4166,10 @@ def gui_main(pdf_path=None, tipo=None):
         root._icon_ref = icon  # mantener referencia viva
     except Exception:
         pass
-    App(root)
+    app = App(root)
+    # single-instance: socket Unix para recibir PDFs de llamadas posteriores
+    _app_ref = {"app": app}
+    _gui_socket_server(root, _app_ref)
     # --- chequeo de instalación al arrancar (autocontenido, estilo AnyDesk) ---
     # Si falta algo crítico (daemon, esquema, deps), se ofrece auto-reparar.
     # El middleware Bit4id requiere sudo: solo se informa con instrucciones.
