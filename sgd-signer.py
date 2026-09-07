@@ -1262,14 +1262,24 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     _sig_obj_patch = None
     if contact_info:
         from pyhanko.sign.signers.pdf_byterange import SignatureObject as _SigObj
-        from pyhanko.pdf_utils.generic import pdf_name as _pdf_name, pdf_string as _pdf_string
+        from pyhanko.pdf_utils.generic import pdf_name as _pdf_name, TextStringObject as _TextStringObject
+
+        class _ContactInfoString(_TextStringObject):
+            """Serializa literal entre paréntesis (bytes crudos latin-1), como
+            el portal .NET: (INFORME N°   D000004-2026-...). pyHanko escapa
+            no-ASCII a octal (\\260) y el verificador del portal no lo lee."""
+
+            def write_to_stream(self, stream, handler=None, container_ref=None):
+                s = self.encode("latin-1", errors="replace")
+                s = s.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+                stream.write(b"(" + s + b")")
 
         _orig_sig_init = _SigObj.__init__
-        _ci = contact_info
+        _ci = _ContactInfoString(contact_info)
 
         def _sig_init_con_contacto(self, *a, **kw):
             _orig_sig_init(self, *a, **kw)
-            self[_pdf_name('/ContactInfo')] = _pdf_string(_ci)
+            self[_pdf_name('/ContactInfo')] = _ci
 
         _sig_obj_patch = _SigObj.__init__
         _SigObj.__init__ = _sig_init_con_contacto
