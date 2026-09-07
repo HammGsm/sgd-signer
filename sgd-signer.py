@@ -78,7 +78,7 @@ TIPOS = {
 # V°B° (3,5): imagen 75×37.5 arriba, texto 5pt abajo.
 # recepción (6): imagen 71×16.03 (217×49) arriba, texto 5pt abajo.
 STAMP_LAYOUT = {
-    "1": (62, 31, 3.39, 1, 68.39, 28, 5, 5),  # = tipo 2 (titular idéntica a básica)
+    "1": (70, 35, 323.32, 91, 395.32, 121, 5, 5),  # FIRMA_NUM: layout .NET (número 13pt + fecha 12pt abajo-izq; ver render)
     "2": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
     "3": (75, 37.5, 7, 36.5, 2, 30.5, 5, 5),
     "4": (62, 31, 3.39, 1, 68.39, 28, 5, 5),
@@ -1002,7 +1002,11 @@ def firma_box(tipo, W, H, pos=None, ms=0):
         return (5, 50, 90, 125)
     if tipo == "6":   # FIRMA_REC: abajo izquierda
         return (20, H - 95 - ms, 105, H - 12 - ms)
-    # 1 (titular, = básica), 2 (básica) y 4/5 (avanzadas sin pos): abajo derecha
+    if tipo == "1":   # FIRMA_NUM: caja ancha .NET (483×128) — número 13pt +
+        # fecha 12pt abajo-izq y bloque 5pt arriba-der (stream R101).
+        x0 = max(0, W - 485)
+        return (x0, max(0, H - 140), min(W, x0 + 483.32), H - 12)
+    # 2 (básica) y 4/5 (avanzadas sin pos): abajo derecha
     return (W - 180, H - 59 - ms, W - 25, H - 24 - ms)
 
 
@@ -1182,6 +1186,25 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
                     b'BT 1 0 0 1 %g %g Tm /F1 %g Tf 0 0 0 rg '
                     % (text_x, y, font_size) + buf.getvalue() + b' Tj ET'
                 )
+            # FIRMA_NUM (tipo 1): número de informe y lugar+fecha se dibujan
+            # aparte, abajo-izquierda del sello (stream EXACTO del original
+            # .NET — R101): número 13pt con trazo (2 Tr), fecha 12pt, el
+            # bloque 5pt del firmante va arriba-derecha.
+            numero_doc = (extra or {}).get("NumeroDoc") or ""
+            if tipo == "1" and numero_doc:
+                lf = extra.get("Lugar") or ""
+                if extra.get("FechaLarga"):
+                    lf = f"{lf}, {extra['FechaLarga']}" if lf else extra["FechaLarga"]
+                cmds.append(
+                    b'BT 1 0 0 1 1 7 Tm /F1 13 Tf 2 Tr 0.43333 w '
+                    b'0 0 0 RG 0 0 0 rg '
+                )
+                buf = BytesIO(); TextStringObject(numero_doc).write_to_stream(buf)
+                cmds.append(buf.getvalue() + b' Tj 0 g 0 Tr 0 G 1 w ET')
+                if lf:
+                    cmds.append(b'BT 1 0 0 1 1 28 Tm /F1 12 Tf 0 0 0 rg ')
+                    buf = BytesIO(); TextStringObject(lf).write_to_stream(buf)
+                    cmds.append(buf.getvalue() + b' Tj 0 g ET')
             cmds.append(b'Q')
             return b' '.join(cmds)
 
