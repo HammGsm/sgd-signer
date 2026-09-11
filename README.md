@@ -42,9 +42,10 @@ protocolo `tramitedoc://`.
 
 | Sistema | Estado | Notas |
 |---|---|---|
-| **Oracle Linux 9 / RHEL 9** | ✅ Producción | Daemon systemd + token USB Bit4id + GUI |
-| **Pop!_OS 24.04** | ✅ Producción | Daemon systemd + certificado importado (.pfx) |
+| **Pop!_OS 24.04** (PC SENAMHI) | ✅ Producción | Daemon systemd (root) + token USB Bit4id + GUI COSMIC |
+| **Pop!_OS 24.04** (PC de Luis) | ✅ Producción | Daemon systemd + certificado importado (.pfx) |
 | **macOS 26.6** (MacBook Intel) | ✅ Producción | LaunchAgent + token USB |
+| Oracle Linux 9 / RHEL 9 | ✅ Soportado | Verificado antes de migrar a Pop!_OS |
 | Ubuntu 22.04+ / Debian 12+ | ✅ Soportado | install.sh multi-distro (no probado en producción) |
 | Windows x64 | ⚠️ Soportado | install.ps1 (no probado en producción) |
 
