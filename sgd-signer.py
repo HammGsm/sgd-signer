@@ -1413,6 +1413,32 @@ def check_ocsp_crl(signer):
 
 
 # --- protocolo WebSocket (Tramitedoc) ---------------------------------------
+def _mkdir_a_usuario(path):
+    """El daemon corre como root y crea carpetas (TDOCUMENTOS, TEMP/...) como root;
+    un dir raiz bloquea guardar/renombrar al usuario (LibreOffice: 'error general
+    de E/S'). Chown al dueño de HOME desde el primer ancestro que no existía."""
+    p = Path(path)
+    if not p.exists():
+        # parents va de abajo hacia arriba: el ÚLTIMO que no existe es el tope
+        base = str(p)
+        for anc in p.parents:
+            if not anc.exists():
+                base = str(anc)
+        os.makedirs(str(p), exist_ok=True)  # el árbol completo (base solo es para el chown)
+        try:
+            import pwd
+            u = pwd.getpwnam(Path.home().name)
+            root_d = base
+            for dirpath, dirnames, _ in os.walk(root_d):
+                for d in [dirpath] + [os.path.join(dirpath, x) for x in dirnames]:
+                    try:
+                        os.chown(d, u.pw_uid, u.pw_gid)
+                    except OSError:
+                        pass
+        except (OSError, KeyError, AttributeError):
+            pass
+
+
 def _chown_a_usuario(path):
     """El daemon corre como root y escribe archivos/dirs como root; hruiz no puede
     guardarlos (LibreOffice: 'error general de entrada y salida'). Chown al dueño
@@ -1438,7 +1464,7 @@ def http_get(url, dest, detect_std=False):
     # crear el directorio padre antes de escribir o open(dest,"wb") revienta con
     # [Errno 2] No such file or directory (root cause del error en GENERAR_DOCUMENTO).
     parent = os.path.dirname(dest) or "."
-    os.makedirs(parent, exist_ok=True)
+    _mkdir_a_usuario(parent)
     req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=60) as r:
         ctype = r.headers.get("Content-Type", "")
@@ -2474,7 +2500,7 @@ def daemon_loop(url):
             docs = Path.home() / "Documentos"
             rp = str(docs / "TDOCUMENTOS") if docs.exists() else str(Path.home() / "TDOCUMENTOS")
         ctx["rutaPri"] = rp
-        Path(ctx["rutaPri"]).mkdir(parents=True, exist_ok=True)
+        _mkdir_a_usuario(ctx["rutaPri"])
         # si el WS cambió (nueva sesión del portal), reconectar
         if ws_thread and ws_thread.is_alive() and ctx.get("ws_url") == p["ws"]:
             log("Sesión ya activa con el mismo WS; ignorando URL duplicada")

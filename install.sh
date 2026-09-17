@@ -22,8 +22,12 @@ else
     BIN_DIR="${SGD_SIGNER_BIN:-$HOME/.local/bin}"
 fi
 # usuario del portal (propio la GUI y ~/.sgd-signer): quien inició la sesión
-# (logname sobrevive al sudo) o, corriendo root por SSH, el primero de /home.
+# (logname sobrevive al sudo) o, corriendo root por SSH, el uid 1000 de
+# /run/user/ (siempre el de la sesión gráfica) o el primero de /home.
 TARGET_USER="${SGD_SIGNER_USER:-$(logname 2>/dev/null || true)}"
+if [ -z "$TARGET_USER" ] && [ -d /run/user/1000 ]; then
+    TARGET_USER="$(stat -c %U /run/user/1000 2>/dev/null || true)"
+fi
 [ -n "$TARGET_USER" ] || TARGET_USER="$(ls /home 2>/dev/null | head -1 || true)"
 if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "$(id -un)" ]; then
     USER_HOME="/home/$TARGET_USER"
