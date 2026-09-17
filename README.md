@@ -1,7 +1,7 @@
 # SGD-SIGNER — Firma digital para el SGD de SENAMHI
 
 Aplicación de firma digital para el Sistema de Gestión Documental (SGD) de
-SENAMHI. Compatible con **Linux (RHEL/Ubuntu/Debian), macOS y Windows**.
+SENAMHI. Compatible con **Linux (Pop!_OS, RHEL/Ubuntu/Debian), macOS y Windows**.
 
 Firma documentos PDF con certificado digital (token USB PKCS#11 o archivo
 `.p12`/`.pfx`) y se integra con el portal de trámite documentario a través del
@@ -18,7 +18,7 @@ protocolo `tramitedoc://`.
    `FirmaDigital`/`VistoDigital`, sufijo `[NF]`/`[F]`/`[VF]`).
 4. El portal sube el documento firmado automáticamente.
 
-## Características (v1.0.0)
+## Características
 
 - **Firma PAdES** visible, 7 tipos (titular, básica, V°B°, avanzada, recepción, encargo).
 - **Certificados importados** (.p12/.pfx): importar desde la GUI, listar junto a
@@ -51,36 +51,21 @@ protocolo `tramitedoc://`.
 
 ## Instalación
 
-### Opción A — binario listo (recomendado)
-
-Descargar de [Releases](https://github.com/HammGsm/sgd-signer/releases) el archivo del sistema:
-
-| Sistema | Archivo |
-|---|---|
-| Linux (RHEL/Oracle/Ubuntu/Debian x64) | `sgd-signer-linux-x64.tar.gz` |
-| Windows x64 | `sgd-signer-windows-x64.zip` |
-| macOS Intel | `sgd-signer-macos-x64.tar.gz` |
-| macOS Apple Silicon (M1/M2/M3) | `sgd-signer-macos-arm64.tar.gz` |
+Clona el repo y ejecuta el instalador:
 
 ```bash
-tar xzf sgd-signer-linux-x64.tar.gz
-./sgd-signer gui
-```
-
-No requiere Python ni dependencias: todo va dentro del binario. En Linux el
-binario se compila sobre glibc 2.34 (RHEL/Oracle Linux 9) — compatible con
-Ubuntu 22.04+ y Debian 12+. En macOS, la primera vez: clic derecho → Abrir
-(Gatekeeper, binario sin firmar por Apple).
-
-### Opción B — desde el código
-
-```bash
+git clone https://github.com/HammGsm/sgd-signer.git && cd sgd-signer
 chmod +x install.sh && ./install.sh
 ```
 
-- **Linux (RHEL/Ubuntu/Debian)**: detecta la distro, verifica dependencias del
-  sistema (tkinter, python3-venv, xdg-utils) con instrucciones por distro, e
-  instala todas las deps del venv. Registra `tramitedoc://` vía `xdg-mime`.
+- **Linux (Pop!_OS/RHEL/Ubuntu/Debian)**: detecta la distro, verifica dependencias
+  del sistema (tkinter, python3-venv, xdg-utils) con instrucciones por distro,
+  instala las deps del venv (`/opt/sgd-signer-venv`) y crea el wrapper
+  `/usr/local/bin/sgd-signer` + daemon systemd `sgd-signer.service` (la
+  integración con el portal requiere el daemon; el instalador lo crea y arranca).
+  Registra `tramitedoc://` vía `xdg-mime`. El token USB Bit4id requiere su
+  middleware (`libbit4xpki.so`) — el Doctor de la GUI lo detecta y da el
+  enlace para descargarlo por distro.
 - **macOS**: registra el esquema vía LaunchServices (el navegador pide permiso la 1ª vez).
 - **Windows**: `powershell -ExecutionPolicy Bypass -File install.ps1` (como Administrador).
 
@@ -129,13 +114,13 @@ avanzada, `5`=V° B° avanzada, `6`=Firma recepción, `7`=Encargo.
 - La GUI permite configurar por tipo de firma: imagen de firma, posición de la
   imagen dentro del sello, y posición del sello en la página.
 
-## Requisitos (solo Opción B — desde el código)
+## Requisitos
 
 - Python 3.9+
 - `pyhanko==0.20.0` + `pyhanko-certvalidator` (firma PAdES)
 - `python-pkcs11` (token USB) — opcional si usas `.p12`
-- `pillow`, `pymupdf` (vista previa de la GUI; reemplaza a poppler-utils)
-- `python3-tkinter` — para la GUI (paquete del sistema)
+- `pillow`, `pymupdf` (vista previa de la GUI)
+- `python3-tk` — para la GUI (paquete del sistema)
 
 ## Verificación
 

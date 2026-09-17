@@ -1729,6 +1729,14 @@ def _entorno_grafico_usuario(usuario=None):
                     break
         except (OSError, KeyError):
             pass
+    if "DISPLAY" in out:
+        # XAUTHORITY: con runuser la GUI corre como el usuario desde un daemon root
+        # que NO tiene el cookie de su X → Tk muere con "no $DISPLAY" / connection
+        # refused si no se pasa el .Xauthority del usuario. Si el environ de la sesión
+        # lo trae, se respeta; si no, se deriva del home.
+        xa = env.get("XAUTHORITY") or str(Path.home() / ".Xauthority")
+        if Path(xa).exists():
+            out["XAUTHORITY"] = xa
     return out or None
 
 

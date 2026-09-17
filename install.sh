@@ -1,38 +1,55 @@
 #!/usr/bin/env bash
-# Instala sgd-signer como handler de tramitedoc:// en Linux (xdg) o macOS (LaunchServices)
-# Soporta: RHEL/Oracle/Alma/Rocky (dnf/yum), Ubuntu y Debian (apt).
+# Instala sgd-signer: app + venv + wrapper + daemon systemd + tramitedoc://
+#   root (PCs del portal): crea /opt/sgd-signer, /opt/sgd-signer-venv,
+#     /usr/local/bin/sgd-signer y el daemon systemd sgd-signer.service.
+#   usuario (macOS / escritorio sin daemon): instala en ~/ y registra el esquema.
+# Variables: SGD_SIGNER_VENV, SGD_SIGNER_APP, SGD_SIGNER_BIN,
+#            SGD_SIGNER_USER (cuándo root: usuario del portal, por defecto el
+#            que inició la sesión o el primero de /home).
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd)"
-VENV="${SGD_SIGNER_VENV:-/opt/sgd-signer-venv}"
-BIN_DIR="${SGD_SIGNER_BIN:-$HOME/.local/bin}"
-APP_DIR="${SGD_SIGNER_APP:-$HOME/.local/share/sgd-signer}"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IS_ROOT=0; [ "$(id -u)" -eq 0 ] && IS_ROOT=1
+
+# --- rutas según quién ejecuta ----------------------------------------------
+if [ "$IS_ROOT" -eq 1 ]; then
+    VENV="${SGD_SIGNER_VENV:-/opt/sgd-signer-venv}"
+    APP_DIR="${SGD_SIGNER_APP:-/opt/sgd-signer}"
+    BIN_DIR="${SGD_SIGNER_BIN:-/usr/local/bin}"
+else
+    VENV="${SGD_SIGNER_VENV:-$HOME/sgd-signer-venv}"
+    APP_DIR="${SGD_SIGNER_APP:-$HOME/.local/share/sgd-signer}"
+    BIN_DIR="${SGD_SIGNER_BIN:-$HOME/.local/bin}"
+fi
+# usuario del portal (propio la GUI y ~/.sgd-signer): quien inició la sesión
+# (logname sobrevive al sudo) o, corriendo root por SSH, el primero de /home.
+TARGET_USER="${SGD_SIGNER_USER:-$(logname 2>/dev/null || true)}"
+[ -n "$TARGET_USER" ] || TARGET_USER="$(ls /home 2>/dev/null | head -1 || true)"
+if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "$(id -un)" ]; then
+    USER_HOME="/home/$TARGET_USER"
+else
+    USER_HOME="$HOME"
+fi
 
 echo "== sgd-signer installer =="
+echo "Rutas: venv=$VENV app=$APP_DIR wrapper=$BIN_DIR usuario=$TARGET_USER"
 
-# --- detección de distro ---------------------------------------------------
+# --- 1. dependencias del sistema (requieren sudo; solo se avisa) ------------
+FALTAN=()
+if ! python3 -c "import tkinter" >/dev/null 2>&1; then FALTAN+=(tkinter); fi
 DISTRO="desconocida"
 if [ -f /etc/os-release ]; then
     . /etc/os-release
-    case "$ID${ID_LIKE:+:$ID_LIKE}" in
+    case "${ID}${ID_LIKE:-}" in
         *rhel*|*fedora*|*centos*|*ol*) DISTRO="rhel" ;;
         *ubuntu*|*debian*) DISTRO="debian" ;;
     esac
 fi
-echo "Distro detectada: $DISTRO ($PRETTY_NAME)"
-
-# --- dependencias del sistema (requieren sudo; solo se avisa) --------------
-# tkinter: módulo C de la stdlib, el venv lo ve; pero el paquete del sistema
-# debe estar instalado. python3-venv: obligatorio en Debian/Ubuntu.
-FALTAN=()
-if ! python3 -c "import tkinter" >/dev/null 2>&1; then
-    FALTAN+=("tkinter")
-fi
 if [ "$DISTRO" = "debian" ] && ! python3 -m venv --help >/dev/null 2>&1; then
-    FALTAN+=("python3-venv")
+    FALTAN+=(python3-venv)
 fi
 if [ "$DISTRO" = "debian" ] && ! command -v xdg-mime >/dev/null 2>&1; then
-    FALTAN+=("xdg-utils")
+    FALTAN+=(xdg-utils)
 fi
 if [ ${#FALTAN[@]} -gt 0 ]; then
     echo "Faltan dependencias del sistema: ${FALTAN[*]}"
@@ -43,41 +60,74 @@ if [ ${#FALTAN[@]} -gt 0 ]; then
     else
         echo "  Instala el paquete de tkinter de tu distro y vuelve a ejecutar."
     fi
-    echo "  (opcional, mejora el visor PDF: poppler-utils / poppler-utils)"
     exit 1
 fi
+echo "[1/5] Dependencias del sistema OK ($DISTRO)"
 
-# --- 1. venv con dependencias ----------------------------------------------
+# --- 2. venv con dependencias -----------------------------------------------
 if [ ! -x "$VENV/bin/python" ]; then
-    echo "[1/4] Creando venv en $VENV ..."
+    echo "[2/5] Creando venv en $VENV ..."
     python3 -m venv "$VENV"
-
-    "$VENV/bin/pip" install -q pyhanko==0.20.0 websocket-client python-pkcs11 pillow pymupdf
-
-    "$VENV/bin/pip" install -q pyhanko==0.20.0 websocket-client python-pkcs11 pillow ttkbootstrap pymupdf
-
+    # tkinter es módulo C de la stdlib: el venv lo hereda del SO (ver paso 1).
+    "$VENV/bin/pip" install -q pyhanko==0.20.0 pyhanko-certvalidator python-pkcs11 \
+        pillow pymupdf pikepdf websocket-client
+    "$VENV/bin/python" -c "import tkinter, pyhanko, pkcs11, websocket, pymupdf, pikepdf" \
+        || { echo "[AVISO] el venv quedó sin alguna dependencia — reejecuta el instalador."; exit 1; }
 else
-    echo "[1/4] venv ya existe: $VENV"
+    echo "[2/5] venv ya existe: $VENV"
 fi
 
-# --- 2. copiar script + assets (todo autocontenido en APP_DIR) -------------
-echo "[2/4] Copiando sgd-signer.py y assets a $APP_DIR ..."
-mkdir -p "$APP_DIR" "$BIN_DIR" "$APP_DIR/assets"
-cp "$SRC_DIR/sgd-signer.py" "$APP_DIR/sgd-signer.py"
-chmod +x "$APP_DIR/sgd-signer.py"
-cp "$SRC_DIR"/assets/*.jpg "$APP_DIR/assets/" 2>/dev/null || true
-[ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP_DIR/assets/"
+# --- 3. copiar script + assets ----------------------------------------------
+if [ "$SRC_DIR" = "$APP_DIR" ]; then
+    echo "[3/5] La app ya está en $APP_DIR"
+else
+    echo "[3/5] Copiando sgd-signer.py y assets a $APP_DIR ..."
+    mkdir -p "$APP_DIR" "$APP_DIR/assets"
+    cp "$SRC_DIR/sgd-signer.py" "$APP_DIR/sgd-signer.py"
+    cp "$SRC_DIR"/assets/*.jpg "$APP_DIR/assets/" 2>/dev/null || true
+    [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP_DIR/assets/"
+fi
 
-# --- 3. wrapper en PATH ----------------------------------------------------
+# --- 4. wrapper en PATH + daemon systemd (root, Linux) ----------------------
+mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/sgd-signer" <<EOF
 #!/usr/bin/env bash
 exec "$VENV/bin/python" "$APP_DIR/sgd-signer.py" "\$@"
 EOF
 chmod +x "$BIN_DIR/sgd-signer"
+echo "[4/5] Wrapper en $BIN_DIR/sgd-signer"
 
-# --- 4. registro del protocolo tramitedoc:// -------------------------------
+if [ "$IS_ROOT" -eq 1 ] && [ "$(uname)" = "Linux" ]; then
+    echo "      Daemon systemd sgd-signer.service (usuario del portal: $TARGET_USER) ..."
+    cat > /etc/systemd/system/sgd-signer.service <<EOF
+[Unit]
+Description=sgd-signer daemon (Tramitedoc SGD SENAMHI)
+After=pcscd.service network-online.target
+Wants=pcscd.service
+
+[Service]
+Type=simple
+ExecStart=$VENV/bin/python $APP_DIR/sgd-signer.py --daemon
+Restart=always
+RestartSec=3
+Environment=HOME=$USER_HOME
+# open_path lanza apps GUI (LibreOffice) que heredan el cgroup del daemon;
+# con KillMode=process el restart mata solo python y deja viva la app del usuario.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable sgd-signer
+    systemctl restart sgd-signer
+elif [ "$(uname)" = "Linux" ]; then
+    echo "      Daemon systemd: se salta (ejecutar como root para crearlo)."
+fi
+
+# --- 5. registro del protocolo tramitedoc:// ---------------------------------
 if [ "$(uname)" = "Darwin" ]; then
-    echo "[3/4] Registrando tramitedoc:// en LaunchServices (bundle .app) ..."
+    echo "[5/5] Registrando tramitedoc:// en LaunchServices (bundle .app) ..."
     APP="$HOME/Applications/SGD-Signer.app"
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
     cat > "$APP/Contents/Info.plist" <<EOF
@@ -113,10 +163,10 @@ EOF
         -f "$APP" || true
     echo "    Nota: en macOS el navegador preguntará la primera vez si abrir tramitedoc:// con SGD-Signer."
 else
-    echo "[3/4] Registrando tramitedoc:// en xdg ..."
-    mkdir -p "$HOME/.local/share/applications"
+    echo "[5/5] Registrando tramitedoc:// en xdg (usuario $TARGET_USER) ..."
+    mkdir -p "$USER_HOME/.local/share/applications"
     # 1) handler del protocolo: NO debe aparecer en el menú (NoDisplay)
-    cat > "$HOME/.local/share/applications/sgd-signer.desktop" <<EOF
+    cat > "$USER_HOME/.local/share/applications/sgd-signer.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=SGD-SIGNER (protocolo tramitedoc)
@@ -125,9 +175,8 @@ Icon=sgd-signer
 MimeType=x-scheme-handler/tramitedoc;
 NoDisplay=true
 EOF
-    chmod +x "$HOME/.local/share/applications/sgd-signer.desktop"
     # 2) entrada visible del menú: la GUI de firma (única app que ve el usuario)
-    cat > "$HOME/.local/share/applications/sgd-signer-gui.desktop" <<EOF
+    cat > "$USER_HOME/.local/share/applications/sgd-signer-gui.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=SGD-SIGNER
@@ -138,20 +187,27 @@ Terminal=false
 Categories=Office;
 MimeType=application/pdf;
 EOF
-    chmod +x "$HOME/.local/share/applications/sgd-signer-gui.desktop"
-    # icono de la app
-    ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+    if [ "$IS_ROOT" -eq 1 ]; then
+        chown -R "$TARGET_USER" "$USER_HOME/.local/share/applications/sgd-signer.desktop" \
+                             "$USER_HOME/.local/share/applications/sgd-signer-gui.desktop" 2>/dev/null || true
+        runuser -u "$TARGET_USER" -- xdg-mime default sgd-signer.desktop x-scheme-handler/tramitedoc || true
+    else
+        xdg-mime default sgd-signer.desktop x-scheme-handler/tramitedoc || true
+        update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    fi
+    # icono en el hicolor del usuario del portal
+    ICON_DIR="$USER_HOME/.local/share/icons/hicolor/256x256/apps"
     mkdir -p "$ICON_DIR"
     [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$ICON_DIR/sgd-signer.png"
-    xdg-mime default sgd-signer.desktop x-scheme-handler/tramitedoc || true
-    update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
-    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+    [ "$IS_ROOT" -eq 1 ] && chown -R "$TARGET_USER" "$USER_HOME/.local/share/icons/hicolor/256x256" 2>/dev/null || true
 fi
 
-echo "[4/4] Listo."
+echo
+echo "[5/5] Listo."
 echo
 echo "Siguiente paso:"
-echo "  1. Copia tu certificado:  mkdir -p ~/.sgd-signer/certs && cp TU_CERT.p12 ~/.sgd-signer/certs/"
-echo "  2. Guarda el PIN:         sgd-signer pin TU_PIN"
-echo "  3. Prueba:               sgd-signer sign documento.pdf --tipo 2"
-echo "  4. En el portal SGD, al firmar se abrirá sgd-signer automáticamente."
+echo "  1. Certificado (.p12/.pfx):  mkdir -p ~/.sgd-signer/certs && cp TU_CERT.p12 ~/.sgd-signer/certs/"
+echo "     (o token USB Bit4id: instala su middleware y el Doctor de la GUI lo detecta)"
+echo "  2. Guarda el PIN:  sgd-signer pin TU_PIN"
+echo "  3. Diagnóstico:    sgd-signer diag"
+echo "  4. En el portal SGD, al pulsar \"Firmar\" se abrirá sgd-signer automáticamente."
