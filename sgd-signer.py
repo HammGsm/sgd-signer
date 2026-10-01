@@ -130,6 +130,34 @@ def _layout_generico(tipo, img_pos, box):
     return (img_w, img_h, img_x, img_y, text_x, text_y, font_size, leading)
 
 
+def layout_para(tipo, box, img_pos=None, lineas=5):
+    """Layout (img_w,img_h,img_x,img_y,text_x,text_y,fs,lead) que CABE en box.
+
+    STAMP_LAYOUT usa coordenadas absolutas del XObject .NET (483×128). Al firmar
+    con una posición manual la caja es de FIRMA_W×FIRMA_H (190×60): dibujar con
+    el layout absoluto mete el número del documento y el bloque del firmante
+    FUERA del rect, y el visor recorta lo que sale del campo (el sello aparecía
+    como una franja del "INFORME TECNICO" encima del encabezado). Si el layout no
+    cabe —o el usuario pidió otra posición de imagen— se recalcula relativo.
+    `lineas` = líneas del bloque del firmante (5: CN 3 + motivo + fecha).
+    """
+    base = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
+    if img_pos is None:
+        img_pos = IMG_POS_DEFAULT.get(tipo, "left")
+    bw, bh = box[2] - box[0], box[3] - box[1]
+
+    def cabe(l):
+        return (l[2] + l[0] <= bw + 0.01 and l[4] <= bw
+                and l[5] <= bh and l[5] - (lineas - 1) * l[7] >= 0)
+
+    if img_pos == IMG_POS_DEFAULT.get(tipo, "left") and cabe(base):
+        return base
+    l = _layout_generico(tipo, img_pos, box)
+    # "top"/"bottom" apilan el texto DEBAJO de la imagen: en caja de 60pt de alto
+    # las 5 líneas se salen por abajo. Si no cabe, degradar a lateral.
+    return l if cabe(l) else _layout_generico(tipo, "left", box)
+
+
 def partir_cn(cn):
     """Parte el CN de RENIEC en 3 líneas como el original .NET (iTextSharp):
     'RUIZ CAYAO Hammerly Scoot FAU 20131366028 hard' →
@@ -1108,7 +1136,14 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     if n_previas > 0:
         h = box[3] - box[1]  # altura de la firma
         dy = n_previas * (h + 5)  # 5pt de separación entre firmas
-        box = (box[0], max(0, box[1] - dy), box[2], max(0, box[3] - dy))
+        # el desplazamiento NUNCA debe colapsar la caja: con una posición manual
+        # pegada al pie, box[1]-dy se recortaba a 0 y el campo quedaba con altura
+        # 0 (rect y0==y1): firma invisible. Si no hay hueco debajo, apilar arriba.
+        if box[1] - dy >= 0:
+            box = (box[0], box[1] - dy, box[2], box[3] - dy)
+        elif box[3] + dy <= H:
+            box = (box[0], box[1] + dy, box[2], box[3] + dy)
+        # sin hueco arriba ni abajo: se deja donde está (superponer, no perderla)
 
     # texto visible: replica el stream EXACTO del original .NET (iTextSharp):
     # CN partido en 3 líneas (partir_cn) + motivo + fecha, Helvetica 5pt negro.
@@ -1130,10 +1165,7 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
     # posición de la imagen relativa al texto (left/right/top/bottom), configurable
     # por tipo. Defaults del original .NET: firma→left, V°B°/recepción→top.
     img_pos = apariencia_tipo.get("img_pos") or IMG_POS_DEFAULT.get(tipo, "left")
-    if img_pos == IMG_POS_DEFAULT.get(tipo, "left"):
-        layout = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
-    else:
-        layout = _layout_generico(tipo, img_pos, box)
+    layout = layout_para(tipo, box, apariencia_tipo.get("img_pos"), lineas=len(lineas))
 
     # stamp custom que replica el stream del original: imagen a escala fija (opacidad
     # 1.0) + texto Helvetica 5pt negro en coordenadas fijas. Reemplaza a TextStampStyle
@@ -1204,14 +1236,23 @@ def sign_pdf(pdf_path, tipo, cert_path, pin, pos=None, pagina=1, extra=None, cfg
                 lf = extra.get("Lugar") or ""
                 if extra.get("FechaLarga"):
                     lf = f"{lf}, {extra['FechaLarga']}" if lf else extra["FechaLarga"]
+                # el .NET asume caja de 128pt de alto (nº a 13pt en y=7, fecha 12pt
+                # en y=28). En una caja manual estrecha esos dos textos se comen el
+                # bloque del firmante: se escalan al alto real de la caja.
+                Hc = float(self.box.height)
+                if layout != STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"]):
+                    fs_num, y_num = min(13.0, Hc * 0.11), Hc * 0.05
+                    fs_lf, y_lf = min(12.0, Hc * 0.10), Hc * 0.24
+                else:
+                    fs_num, y_num, fs_lf, y_lf = 13.0, 7.0, 12.0, 28.0
                 cmds.append(
-                    b'BT 1 0 0 1 1 7 Tm /F1 13 Tf 2 Tr 0.43333 w '
-                    b'0 0 0 RG 0 0 0 rg '
+                    b'BT 1 0 0 1 1 %g Tm /F1 %g Tf 2 Tr 0.43333 w '
+                    b'0 0 0 RG 0 0 0 rg ' % (y_num, fs_num)
                 )
                 buf = BytesIO(); TextStringObject(numero_doc).write_to_stream(buf)
                 cmds.append(buf.getvalue() + b' Tj 0 g 0 Tr 0 G 1 w ET')
                 if lf:
-                    cmds.append(b'BT 1 0 0 1 1 28 Tm /F1 12 Tf 0 0 0 rg ')
+                    cmds.append(b'BT 1 0 0 1 1 %g Tm /F1 %g Tf 0 0 0 rg ' % (y_lf, fs_lf))
                     buf = BytesIO(); TextStringObject(lf).write_to_stream(buf)
                     cmds.append(buf.getvalue() + b' Tj 0 g ET')
             cmds.append(b'Q')
@@ -3780,10 +3821,11 @@ def gui_main(pdf_path=None, tipo=None):
             if cv is None:
                 return
             cv.delete("all")
-            # layout real del tipo (imagen + texto), escalado 2x
+            # layout que CABE en la caja del tipo (mismo que usa sign_pdf), escalado 2x
             tipo = self.cfg_tipo.get()
-            base = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
-            img_w, img_h, img_x, img_y, text_x, text_y, fs, lead = base
+            box = firma_box(tipo, FIRMA_W, FIRMA_H)
+            img_w, img_h, img_x, img_y, text_x, text_y, fs, lead = layout_para(
+                tipo, box, self.cfg_img_pos.get() if hasattr(self, "cfg_img_pos") else None)
             S = 2  # escala: el canvas es 2x la caja real
             W, H = FIRMA_W * S, FIRMA_H * S
             img = self.cfg_img_actual_path()
