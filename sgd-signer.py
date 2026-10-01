@@ -49,6 +49,11 @@ LOCK_SOCK = Path(tempfile.gettempdir()) / "sgd-signer.sock"
 IS_WIN = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 IS_MAC = sys.platform == "darwin"
+# Silencio máximo en la sala del portal antes de reconectar. El portal manda
+# mensajes a ráfagas (cada acción del usuario), no hay keepalive de aplicación:
+# 20 min sin recibir NADA es señal de conexión huérfana, no de calma. Un falso
+# positivo solo cuesta reconectar (inocuo: mismo URL, se re-registra en la sala).
+IDLE_RECONECTAR = 20 * 60
 TSL_URL = "https://iofe.indecopi.gob.pe/TSL/tsl-pe.xml"
 # texto real del original (config_firmaonpe.xml, MENSAJE_FIRMA_MASIVA)
 MENSAJE_FIRMA_MASIVA = (
@@ -1873,25 +1878,47 @@ def lanzar_gui_usuario(pdf_path, tipo, usuario=None):
         return False
 
 
-def run_ws(url_ws, ctx):
+def run_ws(url_ws, ctx, gen=None):
     import websocket
     # el bridge del portal enruta por sufijo de rol: browser -> /BROWSER, app -> /APPCLIENT.
     # el portal manda la url base sin sufijo (bare); si conectamos ahí nunca nos llega
     # nada del lado /BROWSER (verificado: bare/root no recibe, /APPCLIENT sí).
     url_app = url_ws.rstrip("/") + "/APPCLIENT"
     while True:
+        # Un hilo WS por sesión, pero el anterior NO moría: start_session lanzaba
+        # uno nuevo al cambiar la URL y el viejo seguía reconectando a la sala
+        # vieja para siempre. Dos conexiones al MISMO rol de la misma sala y el
+        # server entrega a UNA: el zombi dejaba al daemon vivo sordo
+        # (síntoma: "el portal manda VERIFICAR_EXISTE_DOC/GENERAR_DOCUMENTO y
+        # nunca llega"). Cada generación solo vive si sigue siendo la actual.
+        if gen is not None and gen != ctx.get("ws_gen"):
+            log(f"WS gen {gen} obsoleto; cerrando hilo")
+            return
         try:
             ws = websocket.WebSocket(sslopt={"cert_reqs": ssl.CERT_NONE})
             ws.connect(url_app, timeout=30)
-            # sin timeout de lectura: el bridge mantiene la conexión abierta y el
-            # navegador manda mensajes esporádicamente. Con el timeout de 30s del
-            # connect, recv() moría por inactividad y el daemon dejaba de escuchar
-            # (root cause de "no abre el pdf/docx"). El C# original bloquea indefinido.
-            ws.settimeout(None)
+            # settimeout(None) dejaba el daemon SORDO PARA SIEMPRE: si el server deja
+            # de entregarle mensajes a esta conexion (TCP vivo, keepalive y pong
+            # responden, 0 datos), recv() bloquea indefinido y no hay excepcion que lo
+            # delate -- el portal manda VERIFICAR_EXISTE_DOC/GENERAR_DOCUMENTO y el
+            # daemon nunca se entera; solo un restart lo curaba. Con timeout el
+            # silencio es observable. Ni el pong ni un self-echo sirven de sonda
+            # (medido: el pong responde igual con la sala huerfana; APPCLIENT no se
+            # auto-recibe), asi que tras IDLE_RECONECTAR sin recibir NADA se reconecta:
+            # re-registrarse en la sala es inocuo, no hay estado que perder.
+            ws.settimeout(30)
             ctx["ws"] = ws  # para que el op SIGN pueda responder al portal tras firmar
             log(f"Conectado a {url_app}")
+            ultimo_dato = time.time()
             while True:
-                raw = ws.recv()
+                try:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    if time.time() - ultimo_dato > IDLE_RECONECTAR:
+                        raise websocket.WebSocketConnectionClosedException(
+                            "sin recibir nada en %ds" % IDLE_RECONECTAR)
+                    continue
+                ultimo_dato = time.time()
                 if not raw:
                     continue
                 try:
@@ -2507,8 +2534,18 @@ def daemon_loop(url):
             return
         if ws_thread and ws_thread.is_alive():
             log("WS cambió; cerrando sesión anterior y reconectando")
+        # sube la generación: el hilo anterior deja de reconectar en su proximo
+        # intento (no se puede matar un hilo desde fuera; se auto-retira).
+        ctx["ws_gen"] = ctx.get("ws_gen", 0) + 1
+        ws_viejo = ctx.get("ws")
+        if ws_viejo is not None:
+            try:
+                ws_viejo.close()
+            except Exception:
+                pass
+            ctx["ws"] = None
         ctx["ws_url"] = p["ws"]
-        ws_thread = threading.Thread(target=run_ws, args=(p["ws"], ctx), daemon=True)
+        ws_thread = threading.Thread(target=run_ws, args=(p["ws"], ctx, ctx["ws_gen"]), daemon=True)
         ws_thread.start()
 
     if url:
