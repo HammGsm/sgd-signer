@@ -36,10 +36,12 @@ def test_layout_default_cabe():
 
 
 def test_layout_manual_cabe():
-    """Con posición manual la caja es 190x60: el layout debe caber DENTRO."""
+    """Con posición manual la caja es 190x60: el layout debe caber DENTRO.
+    Excepción: tipo 1 ignora `pos` (caja .NET fija), lo cubre test_pos_tipo1.py."""
     for tipo in m.STAMP_LAYOUT:
         box = m.firma_box(tipo, 595.35, 841.95, pos=(400, 780))
-        assert box[2] - box[0] == m.FIRMA_W and box[3] - box[1] == m.FIRMA_H
+        if tipo != "1":
+            assert box[2] - box[0] == m.FIRMA_W and box[3] - box[1] == m.FIRMA_H
         lay = m.layout_para(tipo, box, lineas=5)
         assert _cabe(lay, box, 5), f"tipo {tipo} se sale de la caja: {lay} en {box}"
 

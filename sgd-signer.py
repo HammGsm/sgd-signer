@@ -1041,7 +1041,10 @@ def firma_box(tipo, W, H, pos=None, ms=0):
     """Caja de la firma en coordenadas PDF (x0, y0, x1, y1, desde abajo).
     Única fuente de verdad: la usa sign_pdf para firmar y la GUI para la vista
     previa, así la preview ocupa exactamente el espacio real de la firma."""
-    if pos:
+    # tipo 1 (FIRMA_NUM) NO acepta posición manual: el .NET lo ancla a la caja
+    # ancha del campo (483×128) y un `pos` residual de la GUI la colapsa a
+    # 190×60 → el título sale diminuto y pisa el lema. Se ignora en la raíz.
+    if pos and tipo != "1":
         x, y = pos
         # el click marca la esquina superior izquierda; la caja crece hacia abajo.
         # 35pt era demasiado bajo: comprimía las 5 líneas del texto y escalaba la
