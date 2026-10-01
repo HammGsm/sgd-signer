@@ -987,6 +987,10 @@ ASSETS_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "
 IMG_POR_TIPO = {t: ASSETS_DIR / f"imagenFirma{t}.jpg" for t in TIPOS}
 IMG_POR_TIPO["7"] = ASSETS_DIR / "imagenFirma.jpg"
 
+# stderr/stdout de la GUI (el daemon root la lanza sin terminal). En /tmp porque
+# es world-writable y compartido por el daemon (root) y la GUI (hruiz).
+GUI_LOG = "/tmp/sgd-signer-gui.log"
+
 
 FIRMA_W, FIRMA_H = 190, 60  # recuadro de firma manual (pt) — 5 líneas a leading 6 + imagen
 
@@ -1535,6 +1539,26 @@ def machine_info(ruta_principal):
     }
 
 
+def _responder_portal(ctx, pend, error="0", message="OK"):
+    """Responde al portal por el WS para una firma pendiente (flujo EJECUTAR_FIRMA).
+    Única implementación: la usa el op SIGN al firmar y EJECUTAR_FIRMA al liberar
+    un intento abandonado. Devuelve True si se envió."""
+    ws = ctx.get("ws")
+    if not ws:
+        log(f"AVISO: no hay WS para responder {pend.get('accion')} nr={pend.get('nr')}")
+        return False
+    try:
+        ws.send(json.dumps({
+            "destination": "BROWSER", "error": error, "message": message,
+            "sender": "CSHARP", "accion": pend["accion"], "nrOperacion": pend["nr"],
+        }))
+        return True
+    except Exception as e:
+        log(f"AVISO: no se pudo responder al portal ({pend.get('accion')} "
+            f"nr={pend.get('nr')}): {e}")
+        return False
+
+
 def handle_message(msg, ctx):
     """Procesa un mensaje del portal; devuelve respuesta (dict) o None."""
     accion = msg.get("accion")
@@ -1546,6 +1570,11 @@ def handle_message(msg, ctx):
     def reply(error="0", message="OK", extra=None):
         r = {"destination": "BROWSER", "error": error, "message": message,
              "sender": "CSHARP", "accion": accion, "nrOperacion": nr}
+        if error not in ("0", 0, None):
+            # antes: un fallo en VERIFICAR_EXISTE_DOC/EJECUTAR_FIRMA se respondía al
+            # portal y NO quedaba en el log -- el síntoma llegaba al usuario
+            # ("no se firmó") sin ningún rastro para diagnosticarlo.
+            log(f"!! {accion} error={error}: {str(message)[:300]}")
         if extra:
             r.update(extra)
         return r
@@ -1674,6 +1703,15 @@ def handle_message(msg, ctx):
             # flujo original: abrir la GUI para que el usuario LEA el documento y
             # luego firme. La respuesta al portal se envía desde el op SIGN (cuando
             # el usuario pulsa Firmar en la GUI), no aquí.
+            anterior = ctx.get("pending_firma")
+            if anterior and anterior.get("nr") != nr:
+                # el usuario abandonó la firma anterior (cerró la GUI sin firmar).
+                # Sin esto el portal quedaba esperando esa respuesta para siempre y
+                # el documento parecía "ya firmado"/trabado: se libera el intento
+                # viejo antes de abrir el nuevo. ponytail: solo libera en el próximo
+                # intento, no detecta el cierre de la GUI (haría falta un callback
+                # del proceso GUI).
+                _responder_portal(ctx, anterior, "1", "Firma cancelada por el usuario")
             ctx["pending_firma"] = {"nr": nr, "accion": accion, "ruta": ruta,
                                     "tipo": tipo, "extra": extra}
             if not lanzar_gui_usuario(ruta, tipo):
@@ -1868,10 +1906,18 @@ def lanzar_gui_usuario(pdf_path, tipo, usuario=None):
         cmd = ["runuser", "-u", usuario, "--", sys.executable,
                str(script), "gui", pdf_path, "--tipo", tipo]
     try:
-        subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=env, start_new_session=True,
-        )
+        # stdout/stderr a un log del USUARIO, no a /dev/null: con DEVNULL el motivo
+        # de un "no se firmó" era irrecuperable (la GUI no tiene terminal). El
+        # usuario escribe aquí porque /tmp es world-writable -- el daemon es root y
+        # no puede abrir ~/.sgd-signer/logs del usuario para escritura.
+        logf = open(GUI_LOG, "ab")
+        try:
+            subprocess.Popen(
+                cmd, stdin=subprocess.DEVNULL, stdout=logf, stderr=logf,
+                env=env, start_new_session=True,
+            )
+        finally:
+            logf.close()
         return True
     except Exception as e:
         log(f"AVISO: no se pudo lanzar la GUI ({e})")
@@ -2197,16 +2243,7 @@ def dispatch_gui_op(req, ctx):
         if es_pendiente:
             # la firma vino del flujo del portal (EJECUTAR_FIRMA): responder OK por el WS
             ctx.pop("pending_firma", None)
-            ws = ctx.get("ws")
-            if ws:
-                try:
-                    ws.send(json.dumps({
-                        "destination": "BROWSER", "error": "0", "message": "OK",
-                        "sender": "CSHARP", "accion": pend["accion"],
-                        "nrOperacion": pend["nr"],
-                    }))
-                except Exception as e:
-                    log(f"AVISO: no se pudo responder al portal: {e}")
+            _responder_portal(ctx, pend)
         return {"ok": True, "out": out}
 
     if op == "GET_STATUS":
@@ -4022,7 +4059,16 @@ def gui_main(pdf_path=None, tipo=None):
             self.lbl_archivo.config(text=os.path.basename(p))
             self.btn_firmar.config(state="normal")
             self._cargar_pos_guardada()
-            self.render_pagina()
+            # limpiar el resultado del documento ANTERIOR: si el render falla aquí
+            # (abajo) el label se quedaba diciendo "Firmado: ..." del PDF previo,
+            # sobre un documento sin firmar. Síntoma reportado: "ya firmé / no se
+            # restablece" -- el estado no se restablecía al cargar otro documento.
+            self.lbl_status.config(text="Documento cargado", fg=UI["muted"])
+            try:
+                self.render_pagina()
+            except Exception as e:
+                self.lbl_status.config(text=f"No se pudo previsualizar: {e}",
+                                       fg=UI["danger_fg"])
 
         def _dibujar_preview_firma(self):
             """Dibuja un rectángulo semitransparente donde irá la firma, usando la
