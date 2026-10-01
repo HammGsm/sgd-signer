@@ -59,6 +59,29 @@ def test_layout_caja_chica_no_sale():
         assert lay[5] - 4 * lay[7] >= -1e-6, (tipo, lay)
 
 
+def test_texto_y_imagen_en_la_misma_banda():
+    """Bug 01-oct-2026: en caja de 60pt el texto se anclaba al techo (y=53) y la
+    imagen iba centrada (12.5..47.5) → bloque ARRIBA del sello con hueco muerto
+    abajo. El .NET real los centra en la misma banda (caja 35: texto 8..28,
+    imagen 1..32)."""
+    for box in ((400, 700, 590, 760), (415, 783, 570, 818), (400, 67, 590, 127)):
+        l = m.layout_para("2", box, lineas=5)
+        _, img_h, _, img_y, _, text_y, fs, lead = l
+        top_img, bot_img = img_y + img_h, img_y
+        top_txt, bot_txt = text_y + fs, text_y - (5 - 1) * lead
+        assert abs(top_img - top_txt) <= 3, (box, top_img, top_txt)
+        assert bot_txt >= bot_img - 3, (box, bot_txt, bot_img)
+        assert bot_txt >= 0 and top_txt <= box[3] - box[1], (box, bot_txt, top_txt)
+
+
+def test_caja_baja_no_usa_el_layout_absoluto_del_net():
+    """Caja 60pt: las coordenadas del .NET (y=28..8) mandan el bloque fuera del
+    rect. Debe recalcularse relativo."""
+    l = m.layout_para("2", (400, 700, 590, 760), lineas=5)
+    assert l != m.STAMP_LAYOUT["2"]
+    assert l[5] + 5 <= 60
+
+
 def test_apilado_no_colapsa_caja():
     """Bug 01-oct-2026: con posición manual pegada al pie, el desplazamiento por
     firmas previas recortaba box[1] a 0 y el campo quedaba y0==y1 (altura 0):

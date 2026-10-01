@@ -100,33 +100,42 @@ IMG_POS_DEFAULT = {
 }
 
 
-def _layout_generico(tipo, img_pos, box):
+def _layout_generico(tipo, img_pos, box, lineas=5):
     """Layout de imagen+texto para una posición dada (left/right/top/bottom).
     box = (x0, y0, x1, y1) en la página; devuelve la tupla STAMP_LAYOUT (coordenadas
     relativas al BBox del form XObject). Solo se usa cuando el usuario cambia la
-    posición por defecto del tipo; los defaults usan STAMP_LAYOUT exacto."""
+    posición por defecto del tipo; los defaults usan STAMP_LAYOUT exacto.
+
+    Imagen y bloque de texto comparten BANDA vertical y van centrados en ella: así
+    lo hace el .NET real (caja 155×35, el layout de STAMP_LAYOUT "2": imagen 3.39..65.4
+    centrada en 17, texto y=8..28 centrado en 18). Anclar el texto al techo de la caja
+    (H-pad-font_size) dejaba el bloque ARRIBA de la imagen con hueco muerto abajo —
+    el desalineado reportado en la caja de 60pt."""
     base = STAMP_LAYOUT.get(tipo, STAMP_LAYOUT["2"])
     img_w, img_h = base[0], base[1]
     W = box[2] - box[0]
     H = box[3] - box[1]
     pad, gap = 2.0, 3.0
     font_size, leading = 5, 5
+    # alto REAL del bloque: la última línea dibuja su BASE en text_y-(n-1)*leading,
+    # el bloque ocupa de ahí hasta text_y+font_size.
+    bloque_h = font_size + (lineas - 1) * leading
+    # centrar el bloque en la banda; nunca por debajo de pad
+    text_y = max(pad, (H - bloque_h) / 2 + (lineas - 1) * leading)
     if img_pos == "left":
         img_x, img_y = pad, (H - img_h) / 2
         text_x = img_w + pad + gap
-        text_y = H - pad - font_size
     elif img_pos == "right":
         img_x, img_y = W - img_w - pad, (H - img_h) / 2
         text_x = pad
-        text_y = H - pad - font_size
     elif img_pos == "top":
         img_x, img_y = (W - img_w) / 2, H - img_h - pad
         text_x = pad
-        text_y = H - img_h - pad - gap
+        text_y = min(text_y, H - img_h - pad - gap - (lineas - 1) * leading)
     else:  # bottom
         img_x, img_y = (W - img_w) / 2, pad
         text_x = pad
-        text_y = H - pad - font_size
+        text_y = min(text_y, H - img_h - pad - gap - (lineas - 1) * leading)
     return (img_w, img_h, img_x, img_y, text_x, text_y, font_size, leading)
 
 
@@ -150,12 +159,17 @@ def layout_para(tipo, box, img_pos=None, lineas=5):
         return (l[2] + l[0] <= bw + 0.01 and l[4] <= bw
                 and l[5] <= bh and l[5] - (lineas - 1) * l[7] >= 0)
 
-    if img_pos == IMG_POS_DEFAULT.get(tipo, "left") and cabe(base):
+    # El layout del .NET asume su caja natural (35pt en firma, 128pt el lienzo
+    # grande). En una caja MÁS ALTA que el bloque (190×60) sus coordenadas
+    # absolutas lo dejan anclado arriba con hueco muerto abajo → recalcular.
+    h_bloque = base[5] + base[6]
+    if (img_pos == IMG_POS_DEFAULT.get(tipo, "left") and cabe(base)
+            and (bh > 100 or bh <= h_bloque + 10)):
         return base
-    l = _layout_generico(tipo, img_pos, box)
+    l = _layout_generico(tipo, img_pos, box, lineas=lineas)
     # "top"/"bottom" apilan el texto DEBAJO de la imagen: en caja de 60pt de alto
     # las 5 líneas se salen por abajo. Si no cabe, degradar a lateral.
-    return l if cabe(l) else _layout_generico(tipo, "left", box)
+    return l if cabe(l) else _layout_generico(tipo, "left", box, lineas=lineas)
 
 
 def partir_cn(cn):
