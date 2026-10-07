@@ -207,6 +207,20 @@ SWIFT
         chmod +x "$APP/Contents/MacOS/launcher"
     fi
     [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP/Contents/Resources/icon.png"
+    # macOS IGNORA un .png suelto en Resources: sin CFBundleIconFile+icon.icns pinta
+    # el icono generico (papel). Generar el .icns con herramientas nativas.
+    if [ -f "$APP/Contents/Resources/icon.png" ]; then
+        IS=$(mktemp -d)/icon.iconset; mkdir -p "$IS"
+        for s in 16 32 64 128 256 512; do
+            sips -z $s $s "$APP/Contents/Resources/icon.png" --out "$IS/icon_${s}x${s}.png" >/dev/null 2>&1
+        done
+        iconutil -c icns "$IS" -o "$APP/Contents/Resources/icon.icns" 2>/dev/null \
+            && rm -f "$APP/Contents/Resources/icon.png"
+        rm -rf "$(dirname "$IS")"
+        PB=/usr/libexec/PlistBuddy
+        "$PB" -c "Add :CFBundleIconFile string icon" "$APP/Contents/Info.plist" 2>/dev/null \
+            || "$PB" -c "Set :CFBundleIconFile icon" "$APP/Contents/Info.plist" 2>/dev/null || true
+    fi
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
         -f "$APP" || true
     echo "    Nota: en macOS el navegador preguntará la primera vez si abrir tramitedoc:// con SGD-Signer."
