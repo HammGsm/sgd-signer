@@ -157,11 +157,55 @@ if [ "$(uname)" = "Darwin" ]; then
 </dict>
 </plist>
 EOF
-    cat > "$APP/Contents/MacOS/launcher" <<EOF
-#!/usr/bin/env bash
-exec "$VENV/bin/python" "$APP_DIR/sgd-signer.py" "\$@"
-EOF
-    chmod +x "$APP/Contents/MacOS/launcher"
+    # macOS entrega la URL tramitedoc:// por AppleEvent (kAEGetURL), NO por argv:
+    # un launcher bash que solo lee "$@" arranca con argc=0, abre la GUI y nunca
+    # reenvia la URL al daemon -> el portal queda en rojo (sin CONEXION). Hay que
+    # compilar el handler Swift que captura el AppleEvent.
+    cat > "$APP/Contents/MacOS/handler.swift" <<SWIFT
+import Cocoa
+let VENV_PY = "$VENV/bin/python"
+let SCRIPT  = "$APP_DIR/sgd-signer.py"
+let FALLBACK_PY = "/usr/bin/python3"
+func pythonPath() -> String {
+    return FileManager.default.isExecutableFile(atPath: VENV_PY) ? VENV_PY : FALLBACK_PY
+}
+func launch(_ url: String?) {
+    let t = Process()
+    t.executableURL = URL(fileURLWithPath: pythonPath())
+    t.arguments = url.map { [SCRIPT, \$0] } ?? [SCRIPT]
+    try? t.run()
+}
+if CommandLine.arguments.count > 1 {
+    let a = CommandLine.arguments[1]
+    if a.lowercased().hasPrefix("tramitedoc:") { launch(a); exit(0) }
+}
+final class Delegate: NSObject, NSApplicationDelegate {
+    var gotURL = false
+    @objc func handleGetURL(_ ev: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        gotURL = true
+        if let u = ev.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue { launch(u) }
+    }
+    func applicationDidFinishLaunching(_ n: Notification) { if !self.gotURL { launch(nil) } }
+    func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+}
+let app = NSApplication.shared
+let d = Delegate()
+app.delegate = d
+app.setActivationPolicy(.accessory)
+NSAppleEventManager.shared().setEventHandler(
+    d,
+    andSelector: #selector(Delegate.handleGetURL(_:withReplyEvent:)),
+    forEventClass: AEEventClass(kInternetEventClass),
+    andEventID: AEEventID(kAEGetURL))
+app.run()
+SWIFT
+    if xcrun swiftc -O "$APP/Contents/MacOS/handler.swift" -o "$APP/Contents/MacOS/launcher" 2>/dev/null; then
+        chmod +x "$APP/Contents/MacOS/launcher"
+    else
+        echo "    AVISO: swiftc no disponible; launcher bash de respaldo (la URL no se reenviara)."
+        printf '#!/usr/bin/env bash\nexec "%s/bin/python" "%s/sgd-signer.py" "$@"\n' "$VENV" "$APP_DIR" > "$APP/Contents/MacOS/launcher"
+        chmod +x "$APP/Contents/MacOS/launcher"
+    fi
     [ -f "$SRC_DIR/assets/icon.png" ] && cp "$SRC_DIR/assets/icon.png" "$APP/Contents/Resources/icon.png"
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
         -f "$APP" || true
